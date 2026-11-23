@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .readers import WoutData, WtbWannier
+from .readers import WoutData, WtbHam, WtbWannier
 
 
 @dataclass
@@ -44,6 +44,11 @@ class TBModel:
     sites: list = field(default_factory=list)
     hoppings: dict = field(default_factory=dict)   # tuple(R) -> (norb, norb)
     notes: list = field(default_factory=list)
+    overlaps: dict | None = None                  # base não ortogonal: tuple(R) -> S(R)
+
+    @property
+    def nonorthogonal(self) -> bool:
+        return self.overlaps is not None
 
     @property
     def norb(self) -> int:
@@ -64,8 +69,48 @@ class TBModel:
             H += M * np.exp(2j * np.pi * np.dot(kfrac, R))
         return H
 
+    def sk(self, kfrac) -> np.ndarray:
+        """S(k) (identidade se a base for ortogonal)."""
+        if self.overlaps is None:
+            return np.eye(self.norb, dtype=complex)
+        kfrac = np.asarray(kfrac, dtype=float)
+        S = np.zeros((self.norb, self.norb), dtype=complex)
+        for R, M in self.overlaps.items():
+            S += M * np.exp(2j * np.pi * np.dot(kfrac, R))
+        return S
+
     def bands(self, kfrac_list) -> np.ndarray:
-        return np.array([np.linalg.eigvalsh(self.hk(k)) for k in kfrac_list])
+        """Autovalores de H(k) c = E S(k) c (problema generalizado se houver S)."""
+        if self.overlaps is None:
+            return np.array([np.linalg.eigvalsh(self.hk(k)) for k in kfrac_list])
+        from scipy.linalg import eigh
+        return np.array([eigh(self.hk(k), self.sk(k), eigvals_only=True)
+                         for k in kfrac_list])
+
+    def site_blocks_hs(self):
+        """Como site_blocks(), para base não ortogonal: retorna
+        (onsite_H, onsite_S, hops) com hops = [(R, s, t, H_blk, S_blk)], sobre a
+        união dos vetores R de H e S (só metade dos pares hermitianos)."""
+        sl = self.site_slices()
+        nsite = len(self.sites)
+        zero = (0, 0, 0)
+        Z = np.zeros((self.norb, self.norb), dtype=complex)
+        onH = [self.hoppings.get(zero, Z)[sl[s], sl[s]] for s in range(nsite)]
+        onS = [self.overlaps.get(zero, Z)[sl[s], sl[s]] for s in range(nsite)]
+        hops = []
+        for R in sorted(set(self.hoppings) | set(self.overlaps)):
+            MH = self.hoppings.get(R, Z)
+            MS = self.overlaps.get(R, Z)
+            for s in range(nsite):
+                for t in range(nsite):
+                    if R == zero and s == t:
+                        continue
+                    if (tuple(-r for r in R), t, s) < (R, s, t):
+                        continue
+                    hb, sb = MH[sl[s], sl[t]], MS[sl[s], sl[t]]
+                    if np.any(hb != 0) or np.any(sb != 0):
+                        hops.append((R, s, t, hb, sb))
+        return onH, onS, hops
 
     def site_blocks(self):
         """Retorna (onsite, hops).
@@ -257,3 +302,215 @@ def from_wannier(wtb: WtbWannier, wouts: list, sites_mode: str = "atoms",
                    efermi=wtb.efermi if efermi is None else efermi,
                    scissors=wtb.scissors, lattice=lattice, periodic_dims=periodic,
                    sites=sites, hoppings=out, notes=notes)
+
+
+# =====================================================================
+# Base não ortogonal (.ham do WanTiBEXOS)
+# =====================================================================
+def _parse_norb(spec: str | dict | None) -> dict:
+    if spec is None:
+        return {}
+    if isinstance(spec, dict):
+        return dict(spec)
+    out = {}
+    for item in spec.replace(";", ",").split(","):
+        if item.strip():
+            k, v = item.split("=")
+            out[k.strip()] = int(v)
+    return out
+
+
+def orbital_atoms_from_basis(basis: list, nbasis: int):
+    """(espécies, posições dos átomos, átomo de cada orbital, rótulos) a partir do .basis."""
+    if len(basis) == nbasis // 2 and nbasis % 2 == 0:
+        nb = len(basis)        # .basis com só um bloco de spin: duplica
+        basis = basis + basis
+        spins = [1] * nb + [-1] * nb
+    elif len(basis) == nbasis:
+        spins = [b.spin for b in basis]
+    else:
+        raise ValueError(f".basis tem {len(basis)} orbitais, o hamiltoniano tem {nbasis}")
+    atoms, species, orb_atom = [], [], []
+    keys = {}
+    for b in basis:
+        key = (b.species, *np.round(b.position, 3))
+        if key not in keys:
+            keys[key] = len(atoms)
+            atoms.append(b.position)
+            species.append(b.species)
+        orb_atom.append(keys[key])
+    spinful = nbasis % 2 == 0 and any(sp != 0 for sp in spins)
+    labels = []
+    for k, b in enumerate(basis):
+        lab = f"o{(k % (nbasis // 2) if spinful else k) + 1}(l{b.l},m{b.m})"
+        if spinful:
+            lab = ("up:" if spins[k] >= 0 else "dn:") + lab
+        labels.append(lab)
+    return species, np.array(atoms), orb_atom, labels
+
+
+def orbital_atoms_from_structure(struct, nbasis: int, spinful: bool, norb=None):
+    """Átomo de cada orbital supondo orbitais contíguos por átomo, na ordem da
+    estrutura, e (SP/SOC) bloco spin-up seguido do bloco spin-down."""
+    nspatial = nbasis // 2 if spinful else nbasis
+    nat = len(struct.species)
+    norb = _parse_norb(norb)
+    uniq = list(dict.fromkeys(struct.species))
+    if not norb:
+        if len(uniq) == 1 and nspatial % nat == 0:
+            norb = {uniq[0]: nspatial // nat}
+        else:
+            raise ValueError(
+                f"{nspatial} orbitais (por spin) para {nat} átomos de {len(uniq)} espécies: "
+                f"informe os orbitais por espécie, ex.: --norb " +
+                ",".join(f"{u}=N" for u in uniq))
+    missing = [u for u in uniq if u not in norb]
+    if missing:
+        raise ValueError(f"--norb não define as espécies {missing}")
+    counts = [norb[sp] for sp in struct.species]
+    if sum(counts) != nspatial:
+        raise ValueError(f"--norb dá {sum(counts)} orbitais por spin, o hamiltoniano tem "
+                         f"{nspatial}: confira os números de orbitais por espécie")
+    orb_atom, labels = [], []
+    for a, c in enumerate(counts):
+        orb_atom += [a] * c
+    labels = [f"o{k + 1}" for k in range(nspatial)]
+    if spinful:
+        orb_atom = orb_atom + orb_atom
+        labels = ["up:" + x for x in labels] + ["dn:" + x for x in labels]
+    return list(struct.species), np.array(struct.positions), orb_atom, labels
+
+
+def _periodic_dims(rvecs, mats, cut):
+    out = []
+    for d in range(3):
+        mask = rvecs[:, d] != 0
+        if mask.any() and any(np.abs(M[mask]).max() > c for M, c in zip(mats, cut)):
+            out.append(d)
+    return out
+
+
+def check_overlap_positive(model, nk=24):
+    """Menor autovalor de S(k) numa malha das direções periódicas."""
+    pd = model.periodic_dims
+    grids = [np.arange(nk) / nk if d in pd else [0.0] for d in range(3)]
+    smin = np.inf
+    for k1 in grids[0]:
+        for k2 in grids[1]:
+            for k3 in grids[2]:
+                smin = min(smin, np.linalg.eigvalsh(model.sk((k1, k2, k3)))[0])
+    return smin
+
+
+def from_wtb_ham(ham: WtbHam, basis=None, structure=None, norb=None,
+                 cutoff: float = 1e-5, s_cutoff: float = 1e-6,
+                 efermi: float | None = None, lattice_tol: float = 1e-3) -> TBModel:
+    """Monta o modelo não ortogonal a partir do .ham + (.basis ou estrutura).
+
+    As posições vêm do .basis (SIESTA, YAeHMOP) ou da estrutura cristalina
+    (POSCAR, geometry.in, .gen, saída do CRYSTAL...) com --norb por espécie.
+    Cada átomo vira um site com seus orbitais; átomos fora da célula de origem
+    são dobrados com a mesma correção de R do caso Wannier.
+    """
+    spinful = ham.systype in ("SP", "SOC")
+    if basis is not None:
+        species, atoms, orb_atom, labels = orbital_atoms_from_basis(basis, ham.nbasis)
+    elif structure is not None:
+        if structure.lattice is not None and not np.allclose(structure.lattice, ham.lattice,
+                                                             atol=lattice_tol):
+            warnings.warn("rede da estrutura difere da rede do .ham; usando a do .ham "
+                          "(as posições cartesianas são usadas como estão)")
+        species, atoms, orb_atom, labels = orbital_atoms_from_structure(
+            structure, ham.nbasis, spinful, norb)
+    else:
+        raise ValueError("base não ortogonal: forneça o .basis ou a estrutura cristalina")
+
+    lattice = ham.lattice
+    periodic = _periodic_dims(ham.rvecs, [ham.ham, ham.ovl], [cutoff, s_cutoff])
+    notes = [f"base não ortogonal (S incluído); dimensões periódicas: {periodic}"]
+
+    # dobra os átomos para a célula de origem; deslocamento inteiro por átomo
+    af = _frac(lattice, atoms)
+    nat_shift = np.zeros((len(atoms), 3), dtype=int)
+    for d in periodic:
+        nat_shift[:, d] = np.floor(af[:, d] + 1e-8).astype(int)
+    atoms_home = atoms - nat_shift @ lattice
+    nshifted = int(np.any(nat_shift != 0, axis=1).sum())
+
+    # sites = átomos (na ordem em que aparecem); orbitais na ordem do arquivo
+    nsite = len(atoms)
+    members = [[] for _ in range(nsite)]
+    for o, a in enumerate(orb_atom):
+        members[a].append(o)
+    sites, newidx, count = [], {}, {}
+    i = 0
+    for a in range(nsite):
+        if not members[a]:
+            continue
+        count[species[a]] = count.get(species[a], 0) + 1
+        sites.append(Site(f"{species[a]}{count[species[a]]}", species[a],
+                          atoms_home[a], [labels[o] for o in members[a]]))
+        for o in members[a]:
+            newidx[o] = i
+            i += 1
+    norb_tot = i
+    idx = np.array([newidx[o] for o in range(ham.nbasis)])
+    nsh = np.array([nat_shift[orb_atom[o]] for o in range(ham.nbasis)])
+
+    def remap(mats):
+        out = {}
+        for ir, R in enumerate(ham.rvecs):
+            M = mats[ir]
+            if not np.any(M):
+                continue
+            Rnew = R[None, None, :] + nsh[None, :, :] - nsh[:, None, :]
+            flat = Rnew.reshape(-1, 3)
+            uniq, inv = np.unique(flat, axis=0, return_inverse=True)
+            inv = inv.reshape(ham.nbasis, ham.nbasis)
+            for u, Ru in enumerate(uniq):
+                key = tuple(int(x) for x in Ru)
+                mm, nn = np.nonzero(inv == u)
+                vals = M[mm, nn]
+                if not np.any(vals):
+                    continue
+                T = out.get(key)
+                if T is None:
+                    T = out[key] = np.zeros((norb_tot, norb_tot), dtype=complex)
+                T[idx[mm], idx[nn]] += vals
+        return out
+
+    H = _hermitize(remap(ham.ham))
+    S = _hermitize(remap(ham.ovl))
+    for d in range(3):      # remove termos através do vácuo
+        if d not in periodic:
+            H = {R: M for R, M in H.items() if R[d] == 0}
+            S = {R: M for R, M in S.items() if R[d] == 0}
+
+    def apply_cut(D, c):
+        out, kept, tot = {}, 0, 0
+        for R, M in D.items():
+            tot += np.count_nonzero(M)
+            M = M.copy()
+            M[np.abs(M) < c] = 0.0
+            if np.any(M):
+                out[R] = M
+                kept += np.count_nonzero(M)
+        return out, kept, tot
+
+    H, hk_, ht_ = apply_cut(H, cutoff)
+    S, sk_, st_ = apply_cut(S, s_cutoff)
+    zero = (0, 0, 0)
+    H.setdefault(zero, np.zeros((norb_tot, norb_tot), dtype=complex))
+    S.setdefault(zero, np.eye(norb_tot, dtype=complex))
+    notes.append(f"cutoff H {cutoff:g} eV: {hk_}/{ht_} elementos; cutoff S {s_cutoff:g}: "
+                 f"{sk_}/{st_} elementos; {len(set(H) | set(S))} vetores R")
+    notes.append(f"{nshifted}/{nsite} átomos fora da célula de origem (R corrigidos)")
+
+    m = TBModel(systype=ham.systype, efermi=ham.efermi if efermi is None else efermi,
+                scissors=ham.scissors, lattice=lattice, periodic_dims=periodic,
+                sites=sites, hoppings=H, notes=notes, overlaps=S)
+    smin = check_overlap_positive(m)
+    m.notes.append(f"menor autovalor de S(k) (malha 24x24): {smin:.3e}")
+    if smin <= 1e-8:
+        warnings.warn(f"S(k) não é positiva-definida (min = {smin:.2e}); reduza --s-cutoff")
+    return m

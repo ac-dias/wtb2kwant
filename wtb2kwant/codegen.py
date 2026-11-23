@@ -37,7 +37,14 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
             f"Por enquanto só sistemas 2D (periódicos em 2 direções); "
             f"detectado: {pdims}")
     prim = model.lattice[pdims]
-    onsite, hops = model.site_blocks()
+    nonorth = model.nonorthogonal
+    if nonorth:
+        onsite, onsite_s, hops5 = model.site_blocks_hs()
+        hops = [(R, a, b, hb) for R, a, b, hb, sb in hops5 if np.any(hb != 0)]
+        ovls = [(R, a, b, sb) for R, a, b, hb, sb in hops5 if np.any(sb != 0)]
+    else:
+        onsite, hops = model.site_blocks()
+        onsite_s, ovls = None, []
 
     L = []
     w = L.append
@@ -65,6 +72,13 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('    HOPPINGS = lista de (R, s, t, bloco) com bloco = <s, 0 | H | t, R> (eV),')
     w('    R em unidades de PRIM_VECS. Só metade dos pares é listada; o Kwant gera')
     w('    o hermitiano conjugado. Com SHIFT_TO_FERMI = True o zero de energia é E_F.')
+    if nonorth:
+        w('    Base NÃO ortogonal: OVERLAPS = (R, s, t, <s,0|t,R>) e ONSITE_S. O Kwant não tem')
+        w('    matriz de sobreposição; na energia E usamos H\' = H - E (S - 1), que dá a mesma')
+        w('    equação (H - E S) psi = 0 e a mesma corrente: transmissão exata. Os termos são')
+        w('    funções do parâmetro E: kwant.smatrix(syst, E, params=dict(E=E)) (conductance()')
+        w('    já faz isso). Bandas: problema generalizado H(k) c = E S(k) c (ribbon_bands()).')
+        w('    Com SHIFT_TO_FERMI o deslocamento é H -> H - E_F S.')
     w('')
     w('Como rodar (precisa de kwant, numpy e matplotlib; ex.: conda activate kwant):')
     w('    python kwant_model.py                          # bandas + transmissão das fitas ZZ e AC (W = 20 Å)')
@@ -77,7 +91,8 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('    from kwant_model import make_two_terminal, conductance')
     w('    syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()')
     w('    T = conductance(syst, [-0.5, 0.0, 0.5])   # energias relativas a E_F (eV), paralelo')
-    w('Funções: make_ribbon, ribbon_bands, make_two_terminal, conductance, channel_count, bulk_hk,')
+    w('Funções: make_ribbon, ribbon_bands, ribbon_hsk, make_two_terminal, conductance, channel_count,')
+    w('         bulk_hk, bulk_sk, bulk_bands,')
     w('         landauer_current, run_iv,')
     w('         make_bulk, make_lattice, min_supercell, ribbon_period.')
     w('"""')
@@ -100,6 +115,8 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('SHIFT_TO_FERMI = True       # subtrai E_F dos termos on-site')
     w('HOP_CUTOFF = 0.0            # eV; >0 descarta elementos pequenos (leads menores, transporte')
     w('                            # mais rápido, menos preciso). Também via --hop-cutoff.')
+    w(f'NONORTHOGONAL = {nonorth!r}     # base não ortogonal (matriz de sobreposição S)')
+    w('OVL_CUTOFF = 0.0            # idem para S (adimensional). Também via --ovl-cutoff.')
     w('')
     w('# Vetores de rede periódicos (Å)')
     w('PRIM_VECS = np.array([' + ",\n                      ".join(
@@ -126,6 +143,24 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
         w(f'    ({Rp!r}, {s}, {t}, {_block(b, imag_tol, "     ")}),')
     w(']')
     w('')
+    if nonorth:
+        w('# Sobreposição on-site <s,0|s,0>, um bloco por site')
+        w('ONSITE_S = [')
+        for st, b in zip(model.sites, onsite_s):
+            w(f'    # {st.name}')
+            w(f'    {_block(b, 1e-9, "    ")},')
+        w(']')
+        w('')
+        w(f'# Sobreposições: (R, s, t, <s,0|t,R>) -- {len(ovls)} blocos')
+        w('OVERLAPS = [')
+        for R, a, b2, blk in ovls:
+            Rp = tuple(R[d] for d in pdims)
+            w(f'    ({Rp!r}, {a}, {b2}, {_block(blk, 1e-9, "     ")}),')
+        w(']')
+    else:
+        w('ONSITE_S = None             # base ortogonal')
+        w('OVERLAPS = []')
+    w('')
     w(_RUNTIME)
     return "\n".join(L) + "\n"
 
@@ -134,16 +169,55 @@ _RUNTIME = r'''
 # ======================================================================
 # CONSTRUÇÃO DOS SISTEMAS
 # ======================================================================
-def _hoppings():
-    """HOPPINGS filtrados por HOP_CUTOFF (blocos vazios removidos)."""
-    if HOP_CUTOFF <= 0:
-        return HOPPINGS
+def _filtered(blocks, cut):
+    if cut <= 0:
+        return blocks
     out = []
-    for R, s, t, blk in HOPPINGS:
-        b = np.where(np.abs(blk) < HOP_CUTOFF, 0.0, blk)
+    for R, s, t, blk in blocks:
+        b = np.where(np.abs(blk) < cut, 0.0, blk)
         if np.any(b != 0):
             out.append((R, s, t, b))
     return out
+
+
+def _hoppings():
+    """HOPPINGS filtrados por HOP_CUTOFF (blocos vazios removidos)."""
+    return _filtered(HOPPINGS, HOP_CUTOFF)
+
+
+def _overlaps():
+    """OVERLAPS filtrados por OVL_CUTOFF (vazio se a base for ortogonal)."""
+    return _filtered(OVERLAPS, OVL_CUTOFF)
+
+
+def _hs_blocks():
+    """dict (R, s, t) -> [H, S] juntando hoppings e sobreposições (base não ortogonal)."""
+    out = {}
+    for R, s, t, blk in _hoppings():
+        out.setdefault((tuple(R), s, t), [None, None])[0] = np.asarray(blk, dtype=complex)
+    for R, s, t, blk in _overlaps():
+        out.setdefault((tuple(R), s, t), [None, None])[1] = np.asarray(blk, dtype=complex)
+    for key, (h, o) in out.items():
+        shape = (h if h is not None else o).shape
+        out[key] = [h if h is not None else np.zeros(shape, complex),
+                    o if o is not None else np.zeros(shape, complex)]
+    return out
+
+
+def _onsite_value(H0, S0):
+    """On-site para base não ortogonal: H' = H - E (S - 1), função do parâmetro E."""
+    D = S0 - np.eye(len(S0))
+
+    def onsite(site, E):
+        return H0 - E * D
+    return onsite
+
+
+def _hopping_value(Hb, Sb):
+    """Hopping para base não ortogonal: H' = H - E S, função do parâmetro E."""
+    def hopping(site1, site2, E):
+        return Hb - E * Sb
+    return hopping
 
 
 def make_lattice():
@@ -159,34 +233,66 @@ def make_bulk(lat=None):
     lat = lat or make_lattice()
     subs = lat.sublattices
     bulk = kwant.Builder(kwant.TranslationalSymmetry(*lat.prim_vecs))
+    # syst[a, b] = <a|H|b>; HoppingKind(d, a, b) -> pares (a(x+d), b(x))
+    # a = s na célula 0, b = t na célula R  =>  d = -R
+    if not NONORTHOGONAL:
+        for s, sub in enumerate(subs):
+            H0 = np.array(ONSITE[s], dtype=complex)
+            if SHIFT_TO_FERMI:
+                H0 = H0 - EFERMI * np.eye(len(H0))
+            bulk[sub(0, 0)] = H0
+        for R, s, t, blk in _hoppings():
+            bulk[kwant.builder.HoppingKind(tuple(-r for r in R), subs[s], subs[t])] = blk
+        return bulk
+    ef = EFERMI if SHIFT_TO_FERMI else 0.0
     for s, sub in enumerate(subs):
         H0 = np.array(ONSITE[s], dtype=complex)
-        if SHIFT_TO_FERMI:
-            H0 = H0 - EFERMI * np.eye(len(H0))
-        bulk[sub(0, 0)] = H0
-    for R, s, t, blk in _hoppings():
-        # syst[a, b] = <a|H|b>; HoppingKind(d, a, b) -> pares (a(x+d), b(x))
-        # a = s na célula 0, b = t na célula R  =>  d = -R
-        bulk[kwant.builder.HoppingKind(tuple(-r for r in R), subs[s], subs[t])] = blk
+        S0 = np.array(ONSITE_S[s], dtype=complex)
+        bulk[sub(0, 0)] = _onsite_value(H0 - ef * S0, S0)
+    for (R, s, t), (Hb, Sb) in _hs_blocks().items():
+        bulk[kwant.builder.HoppingKind(tuple(-r for r in R), subs[s], subs[t])] = \
+            _hopping_value(Hb - ef * Sb, Sb)
     return bulk
 
 
-def bulk_hk(kfrac):
-    """H(k) do cristal 2D (k fracionário), para conferir com as bandas DFT/W90."""
+def _bloch(onsite, blocks, kfrac):
     sl, i0 = [], 0
     for s in SITES:
         sl.append(slice(i0, i0 + len(s["orbitals"])))
         i0 += len(s["orbitals"])
-    H = np.zeros((i0, i0), dtype=complex)
+    M = np.zeros((i0, i0), dtype=complex)
     for s in range(len(SITES)):
-        H[sl[s], sl[s]] += ONSITE[s]
-    for R, s, t, blk in _hoppings():
+        M[sl[s], sl[s]] += onsite[s]
+    for R, s, t, blk in blocks:
         ph = np.exp(2j * np.pi * np.dot(kfrac, R))
-        H[sl[s], sl[t]] += blk * ph
-        H[sl[t], sl[s]] += np.conj(blk.T * ph)
+        M[sl[s], sl[t]] += blk * ph
+        M[sl[t], sl[s]] += np.conj(blk.T * ph)
+    return M
+
+
+def bulk_sk(kfrac):
+    """S(k) do cristal 2D (identidade se a base for ortogonal)."""
+    if not NONORTHOGONAL:
+        n = sum(len(s["orbitals"]) for s in SITES)
+        return np.eye(n, dtype=complex)
+    return _bloch(ONSITE_S, _overlaps(), kfrac)
+
+
+def bulk_hk(kfrac):
+    """H(k) do cristal 2D (k fracionário), para conferir com as bandas DFT/W90.
+    Com SHIFT_TO_FERMI: H - E_F (ortogonal) ou H - E_F S(k) (não ortogonal)."""
+    H = _bloch(ONSITE, _hoppings(), kfrac)
     if SHIFT_TO_FERMI:
-        H -= EFERMI * np.eye(i0)
+        H -= EFERMI * bulk_sk(kfrac)
     return H
+
+
+def bulk_bands(kfrac):
+    """Autovalores do cristal em k (problema generalizado se a base não for ortogonal)."""
+    if not NONORTHOGONAL:
+        return np.linalg.eigvalsh(bulk_hk(kfrac))
+    from scipy.linalg import eigh
+    return eigh(bulk_hk(kfrac), bulk_sk(kfrac), eigvals_only=True)
 
 
 def _int_vec(period):
@@ -205,14 +311,15 @@ def ribbon_period(kind):
     if kind == "zigzag":
         return (1, 0)
     if kind == "armchair":
+        # tolerância de 0.2 grau: redes relaxadas raramente têm 120.000 graus exatos
         best = None
         for m in range(-4, 5):
             for n in range(-4, 5):
                 if (m, n) == (0, 0):
                     continue
                 v = m * a1 + n * a2
-                if abs(np.dot(v, a1)) < 1e-6 * np.linalg.norm(a1) * np.linalg.norm(v):
-                    if best is None or np.linalg.norm(v) < best[0] - 1e-9:
+                if abs(np.dot(v, a1)) < 3.5e-3 * np.linalg.norm(a1) * np.linalg.norm(v):
+                    if best is None or np.linalg.norm(v) < best[0] - 1e-6:
                         best = (np.linalg.norm(v), (m, n))
         if best is None:
             raise ValueError("não achei vetor inteiro perpendicular a a1")
@@ -254,7 +361,7 @@ def min_supercell(kind, width=20.0, nmax=40):
     T, t, n = _ribbon_frame(period)
     pos = [np.asarray(s["pos"]) for s in SITES]
     lmax = 0.0
-    for R, s, u, blk in _hoppings():
+    for R, s, u, blk in list(_hoppings()) + list(_overlaps()):
         d = np.dot(R, PRIM_VECS) + pos[u] - pos[s]
         lmax = max(lmax, abs(np.dot(d, t)))
     N = int(np.floor(lmax / np.linalg.norm(T) + 1e-9)) + 1
@@ -341,6 +448,8 @@ def conductance(syst, energies, nproc=None):
     nproc = min(_ncpu() if nproc is None else nproc, len(energies))
 
     def one(e):
+        if NONORTHOGONAL:      # H' = H - E (S - 1) avaliado na própria energia
+            return kwant.smatrix(fsyst, e, params=dict(E=e)).transmission(1, 0)
         return kwant.smatrix(fsyst, e).transmission(1, 0)
 
     if nproc <= 1 or "fork" not in mp.get_all_start_methods():
@@ -391,12 +500,14 @@ def channel_count(rib, energies, nk=4001):
     return np.array(out)
 
 
-def ribbon_hk(rib):
-    """Retorna (H(k), índices) da fita a partir de um builder com simetria 1D.
+def ribbon_hsk(rib):
+    """Retorna (H(k), S(k)) da fita a partir de um builder com simetria 1D.
 
-    Monta H(k) = sum_n h_n e^{ikn} diretamente dos hoppings do builder, então
-    funciona mesmo com hoppings que ligam células distantes (que o Kwant não
-    finaliza). k em radianos por período do builder.
+    Monta H(k) = sum_n h_n e^{ikn} (e S(k)) diretamente dos termos do builder,
+    então funciona mesmo com hoppings que ligam células distantes (que o Kwant
+    não finaliza). k em radianos por período do builder. Na base não ortogonal
+    os termos são H' = H - E D(E): H = H'(0) e D = H'(0) - H'(1), com
+    D = S - 1 no on-site e D = S nos hoppings.
     """
     sym = rib.symmetry
     sites = sorted(rib.sites(), key=lambda s: (s.family.name, tuple(s.tag)))
@@ -404,33 +515,52 @@ def ribbon_hk(rib):
     for s in sites:
         off[s] = n0
         n0 += s.family.norbs
+
+    def ev(v, *args):
+        if callable(v):
+            h0 = np.atleast_2d(np.asarray(v(*args, 0.0), dtype=complex))
+            h1 = np.atleast_2d(np.asarray(v(*args, 1.0), dtype=complex))
+            return h0, h0 - h1
+        h0 = np.atleast_2d(np.asarray(v, dtype=complex))
+        return h0, np.zeros_like(h0)
+
     terms = []
     for s in sites:
-        v = np.atleast_2d(np.asarray(rib[s], dtype=complex))
-        terms.append((off[s], off[s], 0, v, False))
+        h, d = ev(rib[s], s)
+        terms.append((off[s], off[s], 0, h, d + np.eye(len(d)), False))
     for a, b in rib.hoppings():
         na, nb = sym.which(a)[0], sym.which(b)[0]
         a0, b0 = sym.to_fd(a), sym.to_fd(b)
-        v = np.atleast_2d(np.asarray(rib[a, b], dtype=complex))
-        terms.append((off[a0], off[b0], nb - na, v, True))
+        h, d = ev(rib[a, b], a, b)
+        terms.append((off[a0], off[b0], nb - na, h, d, True))
 
-    def hk(k):
-        H = np.zeros((n0, n0), dtype=complex)
-        for i, j, dn, v, hc in terms:
+    def build(k, which):
+        M = np.zeros((n0, n0), dtype=complex)
+        for i, j, dn, h, sv, hc in terms:
+            v = h if which == 0 else sv
             blk = v * np.exp(1j * k * dn)
-            H[i:i + v.shape[0], j:j + v.shape[1]] += blk
+            M[i:i + v.shape[0], j:j + v.shape[1]] += blk
             if hc:
-                H[j:j + v.shape[1], i:i + v.shape[0]] += blk.conj().T
-        return H
+                M[j:j + v.shape[1], i:i + v.shape[0]] += blk.conj().T
+        return M
 
-    return hk
+    return (lambda k: build(k, 0)), (lambda k: build(k, 1))
+
+
+def ribbon_hk(rib):
+    """H(k) da fita (veja ribbon_hsk; na base não ortogonal use também S(k))."""
+    return ribbon_hsk(rib)[0]
 
 
 def ribbon_bands(rib, nk=201):
-    """Bandas da fita, k em [-pi, pi] (radianos por período do builder)."""
-    hk = ribbon_hk(rib)
+    """Bandas da fita, k em [-pi, pi] (radianos por período do builder).
+    Na base não ortogonal resolve o problema generalizado H(k) c = E S(k) c."""
+    hk, sk = ribbon_hsk(rib)
     ks = np.linspace(-np.pi, np.pi, nk)
-    return ks, np.array([np.linalg.eigvalsh(hk(k)) for k in ks])
+    if not NONORTHOGONAL:
+        return ks, np.array([np.linalg.eigvalsh(hk(k)) for k in ks])
+    from scipy.linalg import eigh
+    return ks, np.array([eigh(hk(k), sk(k), eigvals_only=True) for k in ks])
 
 
 def ribbon_info(rib):
@@ -543,7 +673,8 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     a1.set_xlim(energies[0] - mu0, energies[-1] - mu0)
     a1.set_ylim(bottom=0)
     a1.axvline(0, color="k", ls=":", lw=0.6)
-    a1.set_title(f"transmission (hopping cutoff {HOP_CUTOFF:g} eV)", fontsize=10)
+    a1.set_title(f"transmission (hopping cutoff {HOP_CUTOFF:g} eV"
+                 + (f", overlap cutoff {OVL_CUTOFF:g})" if NONORTHOGONAL else ")"), fontsize=10)
     a1.legend(fontsize=8)
     a2.set_xlabel("bias $V$ (V)")
     a2.set_ylabel(r"current $I$ ($\mu$A)")
@@ -598,6 +729,8 @@ def main():
                     help="processos para a transmissão [metade dos núcleos lógicos]")
     ap.add_argument("--hop-cutoff", type=float, default=None,
                     help="descarta hoppings |H| < X eV (mais rápido, menos preciso) [0]")
+    ap.add_argument("--ovl-cutoff", type=float, default=None,
+                    help="base não ortogonal: descarta |S| < X [0; 1e-4 com --iv]")
     ap.add_argument("--iv", action="store_true",
                     help="em vez das bandas, calcula T(E) fino e a curva I-V das duas fitas "
                          "(usa --hop-cutoff 1e-3 se não for dado)")
@@ -609,11 +742,16 @@ def main():
                     help="figura de saída [bands_ribbons.png, ou iv_ribbons.png com --iv]")
     args = ap.parse_args()
     global HOP_CUTOFF
+    global OVL_CUTOFF
     if args.hop_cutoff is not None:
         HOP_CUTOFF = args.hop_cutoff
+    if args.ovl_cutoff is not None:
+        OVL_CUTOFF = args.ovl_cutoff
     if args.iv:
         if args.hop_cutoff is None:
             HOP_CUTOFF = 1e-3
+        if args.ovl_cutoff is None and NONORTHOGONAL:
+            OVL_CUTOFF = 1e-4
         run_iv((args.width_zz, args.width_ac), args.vmax, args.nv, args.de, args.length,
                args.temperature, args.nproc, args.output or "iv_ribbons.png")
         return

@@ -18,6 +18,14 @@ so you can copy it, share it and modify it freely.
 
 - Reads the WanTiBEXOS **Wannier90-type** Hamiltonian (`tb_hr.dat`, produced by
   `param_gen_vasp`). The spin types are NP, SP and SOC.
+- Reads the WanTiBEXOS **non-orthogonal** Hamiltonians (`.ham` with overlap matrix S) from
+  the SIESTA, DFTB+, FHI-aims, CRYSTAL and YAeHMOP interfaces.
+  - Orbital positions come from the `.basis` file (SIESTA, YAeHMOP) or from the crystal
+    structure (POSCAR, `geometry.in`, DFTB+ `.gen`, CRYSTAL output, or ASE formats) plus
+    `--norb`.
+  - Transport is **exact** through the energy-dependent substitution H′ = H − E(S − 1).
+  - Bands come from the generalized problem H(k)c = E S(k)c.
+  - Löwdin orthogonalization is available as an experimental option.
 - Reads the **Wannier centres, atoms and lattice** directly from `wannier90.wout`, so you
   don't have to rerun Wannier90. For spin-polarized runs it takes two `.wout` files
   (up and down).
@@ -121,13 +129,32 @@ Spin-polarized calculations:
 wtb2kwant tb_hr.dat --wout wannier90.up.wout wannier90.dn.wout -o kwant_model.py
 ```
 
+Non-orthogonal Hamiltonians (the format is detected automatically):
+
+```bash
+wtb2kwant tb-NP.ham --basis basis_set-NP.basis                 # SIESTA, YAeHMOP
+wtb2kwant fhi_tb.ham --structure geometry.in --efermi -5.0096  # FHI-aims, one species
+wtb2kwant hbn_sp_tb.ham --structure hbn_sp.out --norb B=14,N=14  # CRYSTAL
+wtb2kwant dftb.ham --structure geo.gen --norb Mo=9,S=4          # DFTB+
+```
+
+The generated script and its options are the same as in the orthogonal case. In the
+script, the on-site terms and hoppings are functions of the energy, and `conductance()`
+passes it automatically. Some interfaces write E_F = 0 in the header, so give the Fermi
+level with `--efermi`.
+
 ### Command-line options
 
 | option | default | description |
 |---|---|---|
-| `input` | – | WanTiBEXOS Hamiltonian file (`tb_hr.dat`) |
+| `input` | – | WanTiBEXOS Hamiltonian file (`tb_hr.dat` or `.ham`) |
 | `--wout F [F]` | required | `wannier90.wout` (two files, up then down, for SP) |
 | `--sites {atoms,centres}` | `atoms` | group Wannier functions by nearest atom, or one site per WF |
+| `--basis F` | – | `basis_set-*.basis` (non-orthogonal: SIESTA, YAeHMOP) |
+| `--structure F` | – | crystal structure (non-orthogonal: DFTB+, FHI-aims, CRYSTAL, ...) |
+| `--norb Sp=n,...` | – | orbitals per spin of each species (with `--structure`) |
+| `--s-cutoff X` | `1e-6` | drop overlap elements with \|S\| < X |
+| `--orthogonalize {none,lowdin}` | `none` | keep S (exact), or Löwdin (experimental, see below) |
 | `--cutoff X` | `1e-5` | drop matrix elements with \|H\| < X (eV) |
 | `--efermi X` | from file | override the Fermi energy (eV) |
 | `-o FILE` | `kwant_model.py` | generated script |
@@ -147,9 +174,25 @@ writes `tests/results/mos2_np/REPORT.md` and the figures. Summary:
 - **Transmission of perfect ribbons:** an integer equal to the number of open channels.
 - **Landauer current:** reproduces the analytic case T = 1, where I/V = 2e²/h.
 
+`tests/validate_mos2_yaehmop_np.py` validates the **non-orthogonal** path with an
+extended-Hückel MoS₂ model from YAeHMOP (17 orbitals, overlaps up to 0.44). It runs in
+about 3 min and writes `tests/results/mos2_yaehmop_np/REPORT.md`:
+
+- **Generalized bulk bands vs YAeHMOP:** 0.008 meV error in the window VBM−6…+4 eV; the gap
+  is reproduced to 6 decimals.
+- **Transmission with H − E(S − 1):** equal to the number of channels of the generalized
+  ribbon bands at all energies, for both ribbons (difference exactly 0).
+- **Löwdin (negative result, kept as a warning):**
+  - exact in the bulk (it converges with the cutoff);
+  - wrong by ~2 eV in nanoribbons. The Löwdin on-site energies absorb the bulk
+    environment (Mo 5s: 0.2 → 24 eV), and at an edge the missing neighbours no longer
+    compensate this.
+  - For strongly non-orthogonal bases, keep S (the default).
+
 ```bash
-python -m pytest tests -q          # quick regression tests
-python tests/validate_mos2_np.py   # full report (~13 min on 12 cores; --quick ~5 min)
+python -m pytest -q                        # quick regression tests (~20 s)
+python tests/validate_mos2_np.py           # Wannier90 report (~13 min on 12 cores; --quick ~5 min)
+python tests/validate_mos2_yaehmop_np.py   # non-orthogonal report (~3 min)
 ```
 
 ## Documentation
@@ -160,14 +203,11 @@ API of the generated script, and the validation.
 
 ## Current limitations and roadmap
 
-- Supported: Wannier90-type WanTiBEXOS input; 2D crystals (ribbons).
+- Supported: Wannier90-type and non-orthogonal WanTiBEXOS input; 2D crystals (ribbons).
 - SP and SOC are implemented, but have not yet been validated against reference data.
-- The scissors operator in `tb_hr.dat` is recorded in the generated script but not applied.
-- Planned:
-  - the non-orthogonal (localized-basis, e.g. SIESTA) format, using the exact transport
-    substitution H′ = H − E(S − 1);
-  - nanotubes;
-  - 3D bulk crystals and slabs.
+- The scissors operator is recorded in the generated script but not applied.
+- Non-orthogonal bases: Kwant operators (local DOS, currents) are not yet adapted to S.
+- Planned: nanotubes; 3D bulk crystals and slabs.
 
 ## License
 
