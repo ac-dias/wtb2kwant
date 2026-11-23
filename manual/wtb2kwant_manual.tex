@@ -29,7 +29,7 @@
 
 \title{\tool{} --- User Manual\\[4pt]
 \large From \wtb{} tight-binding Hamiltonians to Kwant transport scripts}
-\author{Version 0.1.0}
+\author{Version 0.2.0}
 \date{\today}
 
 \begin{document}
@@ -80,10 +80,19 @@ parent crystal. The workflow is
         (Section~\ref{sec:validation}).
 \end{itemize}
 
-\paragraph{Status (v0.1.0).}
-Supported: the Wannier90-type input, 2D crystals, nanoribbons, two-terminal transmission.
-SP and SOC inputs are implemented but not yet validated. Planned: the non-orthogonal
-(SIESTA) format, nanotubes, and 3D crystals (Section~\ref{sec:roadmap}).
+\paragraph{Status (v0.2.0).}
+\begin{itemize}[nosep]
+  \item Supported:
+        \begin{itemize}[nosep]
+          \item the Wannier90-type input;
+          \item the non-orthogonal input from all \wtb{} localized-basis interfaces (SIESTA,
+                DFTB+, FHI-aims, CRYSTAL, YAeHMOP), with exact transport through
+                $H-E(S-\mathbb{1})$ or optional Löwdin orthogonalization;
+          \item 2D crystals, nanoribbons, two-terminal transmission and Landauer $I$--$V$.
+        \end{itemize}
+  \item Implemented but not yet validated against reference data: SP and SOC.
+  \item Planned: nanotubes and 3D crystals (Section~\ref{sec:roadmap}).
+\end{itemize}
 
 %=====================================================================
 \section{Installation}
@@ -221,20 +230,76 @@ Adding \code{write\_xyz = true} to the \code{.win} file and rerunning \code{wann
 If you enable \code{translate\_home\_cell}, remember that the centres it writes are shifted
 but the \code{hr} file is \emph{not}. Section~\ref{sec:folding} explains why this matters.
 
-\subsection{Non-orthogonal format (planned)}
-The \code{siesta2wtb.py} interface writes \code{tb-\{NP,SP,SOC\}.ham}. Each line has
-Cartesian supercell offsets (in \AA), orbital indices, $\mathrm{Re}\,H$, $\mathrm{Im}\,H$
-and $S$. The file comes with \code{basis\_set-*.basis}, which contains the orbital
-positions. Support for this format is planned (Section~\ref{sec:roadmap}).
+\subsection{Non-orthogonal Hamiltonians (\code{.ham})}\label{sec:ham}
+The \wtb{} interfaces for codes with localized basis sets write the same non-orthogonal
+format. These interfaces are \code{siesta2wtb}, \code{dftb2wtb}, \code{aims2wtb},
+\code{crystal2wtb} and \code{yaehmop2wtb}:
+\begin{lstlisting}
+NP                     ! NP | SP | SOC
+0.000000               ! scissors operator (eV)
+-3.203856              ! Fermi energy (eV)
+ a1x a1y a1z           ! lattice vectors (Angstrom)
+ a2x a2y a2z
+ a3x a3y a3z
+182                    ! nbasis (2 x orbitals for SP/SOC)
+75                     ! number of cells
+#rcell_x rcell_y rcell_z i j ReH ImH S
+ Rx Ry Rz  i  j  Re(H)  Im(H)  S     ! R Cartesian (Angstrom)
+\end{lstlisting}
+Each line gives $H_{ij}(\mathbf{R})=\bra{i,\mathbf{0}}\hat H\ket{j,\mathbf{R}}$ and
+$S_{ij}(\mathbf{R})=\langle i,\mathbf{0}|j,\mathbf{R}\rangle$. \tool{} converts the
+Cartesian $\mathbf{R}$ into integer lattice indices and stops if they are not integer
+combinations of the lattice vectors. For SP and SOC, the orbitals form two blocks:
+spin up ($1\ldots n$), then spin down ($n+1\ldots 2n$).
+
+\paragraph{Orbital positions.} Kwant needs to know on which atom each orbital sits.
+There are two ways to provide this:
+\begin{enumerate}[nosep]
+  \item \textbf{\code{--basis basis\_set-*.basis}} (written by the SIESTA and YAeHMOP
+        interfaces). Each line is \code{index species x y z l m spin}. Orbitals at the same
+        position with the same species form one site. A \code{.basis} with a single spin
+        block is duplicated for SP/SOC.
+  \item \textbf{\code{--structure FILE}} for DFTB+, FHI-aims and CRYSTAL, which do not
+        write a \code{.basis}. Supported structure formats:
+        \begin{itemize}[nosep]
+          \item VASP \code{POSCAR}/\code{CONTCAR};
+          \item FHI-aims \code{geometry.in} (\code{atom} and \code{atom\_frac});
+          \item DFTB+ \code{.gen} (\code{C}, \code{S} and \code{F} types);
+          \item the CRYSTAL output (\code{.out}), using the block
+                \code{CARTESIAN COORDINATES - PRIMITIVE CELL} or the block
+                \code{ATOM N.AT. SHELL X(A) Y(A) Z(A)};
+          \item any format readable by ASE, if it is installed (\code{--structure-format ase[:fmt]}).
+        \end{itemize}
+        The orbitals are assumed to be contiguous per atom and in the order of the
+        structure; this is the convention of all these codes. The number of orbitals
+        \emph{per spin} of each species is given with \code{--norb}, e.g.\
+        \code{--norb Mo=9,S=4}. It can be omitted when there is a single species. The
+        total must match the Hamiltonian.
+\end{enumerate}
+Atoms outside the home cell are folded back with the same $\mathbf{R}$ correction as the
+Wannier centres (Section~\ref{sec:folding}).
+
+\paragraph{Energy reference.} Some interfaces write $E_F=0$ in the header: YAeHMOP, and
+FHI-aims in the test data. In that case, give the Fermi level with \code{--efermi}. For
+example, the FHI-aims graphene test needs \code{--efermi -5.0096}, the chemical potential
+printed in its output. The YAeHMOP interface also shifts all energies by a constant;
+band energies relative to the VBM are not affected.
 
 %=====================================================================
 \section{Command-line reference}
 %=====================================================================
 
 \begin{lstlisting}
-wtb2kwant INPUT --wout WOUT [WOUT] [--sites {atoms,centres}]
+# Wannier90 (orthogonal)
+wtb2kwant tb_hr.dat --wout WOUT [WOUT] [--sites {atoms,centres}]
+          [--cutoff X] [--efermi X] [-o OUTPUT]
+# non-orthogonal (.ham)
+wtb2kwant FILE.ham (--basis BASIS | --structure FILE [--norb Sp=n,...])
+          [--s-cutoff X] [--orthogonalize {none,lowdin}] [--lowdin-mesh N]
           [--cutoff X] [--efermi X] [-o OUTPUT]
 \end{lstlisting}
+The format is detected from the header: line 9 of a \code{.ham} is the \code{\#rcell}
+comment. You can force it with \code{--format \{wannier,nonortho\}}.
 \begin{center}
 \begin{tabular}{p{3.6cm}p{2.2cm}p{8.2cm}}
 \toprule
@@ -245,6 +310,15 @@ Option & Default & Description \\
 \code{--sites} & \code{atoms} & \code{atoms}: group WFs on the nearest atom (one Kwant site
   per atom). \code{centres}: one site per WF, at its centre. Use \code{centres} for
   bond-centred WFs (e.g.\ $sp^3$ hybrids). \\
+\code{--basis F} & --- & \code{basis\_set-*.basis} (SIESTA, YAeHMOP). \\
+\code{--structure F} & --- & Crystal structure (POSCAR, \code{geometry.in}, \code{.gen},
+  CRYSTAL \code{.out}, ASE formats); \code{--structure-format} forces the format. \\
+\code{--norb} & --- & Orbitals per spin of each species, e.g.\ \code{Mo=9,S=4}. \\
+\code{--s-cutoff X} & $10^{-6}$ & Drop overlap elements with $|S|<X$. \\
+\code{--orthogonalize} & \code{none} & \code{none}: keep $S$ (exact transport,
+  Section~\ref{sec:nonortho}). \code{lowdin}: symmetric orthogonalization in the bulk
+  (Section~\ref{sec:lowdin}). \\
+\code{--lowdin-mesh N} & auto & $k$ mesh ($N\times N$) for Löwdin. \\
 \code{--cutoff X} & $10^{-5}$ & Drop matrix elements with $|H|<X$ (eV). \\
 \code{--efermi X} & from file & Override the Fermi energy (eV). \\
 \code{-o FILE} & \code{kwant\_model.py} & Name of the generated script. \\
@@ -335,6 +409,94 @@ two ways:
 The scattering region must be at least one lead cell long. \code{make\_two\_terminal}
 lengthens it automatically if needed.
 
+\subsection{Non-orthogonal bases in Kwant}\label{sec:nonortho}
+In a non-orthogonal basis the Schrödinger equation is the generalized problem
+$(H - E S)\,\psi = 0$, and Kwant has no overlap matrix. At a \emph{fixed} energy $E$,
+however,
+\begin{equation}
+  (H - E S)\,\psi = 0 \quad\Longleftrightarrow\quad (H' - E)\,\psi = 0, \qquad
+  H'(E) = H - E\,(S - \mathbb{1}).
+\end{equation}
+\tool{} therefore writes the on-site terms as $H_{ss} - E(S_{ss}-\mathbb{1})$ and the
+hoppings as $H_{st}(\mathbf{R}) - E\,S_{st}(\mathbf{R})$, as Python functions of the
+Kwant parameter \code{E}. The transmission is then computed with
+\code{kwant.smatrix(syst, E, params=dict(E=E))}, which \code{conductance()} does
+automatically. The result is \emph{exact}, not an approximation, for three reasons:
+\begin{itemize}[nosep]
+  \item the scattering states at energy $E$ solve exactly the original generalized problem;
+  \item the lead modes are computed from the same equation;
+  \item the probability current between two cells in a non-orthogonal basis is
+        $j \propto \mathrm{Im}\,\psi_n^\dagger (V - E S_V)\,\psi_{n+1}$, where $V$ and $S_V$
+        are the inter-cell blocks of $H$ and $S$. This is precisely the hopping of $H'$.
+\end{itemize}
+Hence the mode normalization, the transmission and the Landauer current are all correct.
+What \emph{does} change is that $H'$ depends on $E$:
+\begin{itemize}[nosep]
+  \item Kwant's own band-structure tools (\code{kwant.physics.Bands}, \code{wraparound}
+        at fixed parameters) solve $H'(E)$ at a single $E$, not the generalized problem.
+        The generated script instead builds $H(k)$ and $S(k)$ directly from the builder:
+        \code{ribbon\_hsk} evaluates each term at $E=0$ and $E=1$, which recovers $H$ and
+        $S$. It then solves $H(k)c=ES(k)c$ with \code{scipy.linalg.eigh}
+        (\code{ribbon\_bands}, \code{bulk\_bands}).
+  \item The energy origin is moved with $H \to H - E_F S$, not $H - E_F\mathbb{1}$, so
+        that all eigenvalues shift rigidly by $E_F$.
+  \item Local densities of states and local current operators from \code{kwant.operator}
+        need the metric $S$ and are not yet adapted.
+\end{itemize}
+The overlap has its own cutoff (\code{--s-cutoff}, and \code{OVL\_CUTOFF} or
+\code{--ovl-cutoff} in the script). Errors in $S$ enter the eigenvalues as $E\,\delta S$,
+so high-lying bands are more sensitive. After the cutoff, \tool{} checks that $S(k)$ is
+positive definite on a $24\times24$ mesh and reports the smallest eigenvalue.
+
+\subsection{Löwdin orbitals}\label{sec:lowdin}
+The alternative to keeping $S$ is to change the basis into an orthonormal one. Among all
+orthonormal sets built from the original orbitals $\{\phi_i\}$, the \emph{symmetric}
+(Löwdin) orthogonalization
+\begin{equation}
+  \tilde\phi_i = \sum_j \phi_j\,\big(S^{-1/2}\big)_{ji}, \qquad
+  \tilde H = S^{-1/2}\, H\, S^{-1/2}
+\end{equation}
+has a special property: it is the one closest to the original orbitals, i.e.\ it
+minimizes $\sum_i \|\tilde\phi_i - \phi_i\|^2$. Each Löwdin orbital keeps the character
+($l$, $m$) and the centre of its parent atomic orbital, so it stays on the same Kwant
+site, but it acquires small tails on the neighbouring atoms. The eigenvalues are
+unchanged: $\tilde H \tilde c = E\tilde c$ with $\tilde c = S^{1/2}c$.
+
+In a crystal the transformation is done in $k$ space,
+$\tilde H(\mathbf{k}) = S(\mathbf{k})^{-1/2} H(\mathbf{k}) S(\mathbf{k})^{-1/2}$. \tool{}
+proceeds in three steps:
+\begin{enumerate}[nosep]
+  \item It evaluates this transformation on an $N\times N$ mesh (\code{--lowdin-mesh}; by
+        default $N = 2\max(2r_\text{max}+1, 15)+1$, where $r_\text{max}$ is the range of
+        $H$ and $S$).
+  \item It transforms back with
+        $\tilde H(\mathbf{R}) = N^{-2}\sum_{\mathbf{k}} \tilde H(\mathbf{k})\,e^{-2\pi i\mathbf{k}\cdot\mathbf{R}}$.
+        Each site pair $(s,t)$ gets the minimum-image $\mathbf{R}$ (smallest
+        $|\mathbf{R}A + \mathbf{p}_t - \mathbf{p}_s|$), and ties are split equally, as
+        with the Wannier90 degeneracies.
+  \item It reports the band error at random $k$-points off the mesh, together with the
+        condition number of $S$.
+\end{enumerate}
+The result is an ordinary orthogonal model, so all Kwant tools apply. There are three
+caveats:
+\begin{itemize}[nosep]
+  \item \textbf{Longer range.} $S^{-1/2}$ decays more slowly than $S$, especially for a
+        poorly conditioned overlap (diffuse basis functions, as in FHI-aims or CRYSTAL).
+        The Löwdin Hamiltonian therefore has many more hoppings, and the lead supercells
+        are larger.
+  \item \textbf{Bulk orthogonalization.} The orbitals are orthogonalized in the infinite
+        crystal, and the ribbon is then cut from them. Near an edge this is not the same
+        as orthogonalizing the ribbon itself: the tails that crossed the cut are lost.
+        The edge states and the transmission are therefore approximate. The error is
+        quantified for MoS$_2$ in Section~\ref{sec:val-nonortho}.
+  \item \textbf{Ill-conditioning.} If $S(\mathbf{k})$ has very small eigenvalues,
+        $S^{-1/2}$ amplifies numerical noise. \tool{} warns when $\mathrm{cond}(S)>10^6$.
+\end{itemize}
+For these reasons the default is to keep $S$. As shown in Section~\ref{sec:val-nonortho},
+for strongly non-orthogonal bases the Löwdin model is accurate in the bulk but fails
+badly in nanoribbons. The option is kept as experimental and as a record of this
+limitation.
+
 %=====================================================================
 \section{The generated script}
 %=====================================================================
@@ -363,12 +525,14 @@ Function & Description \\
 \midrule
 \code{make\_lattice()} & Kwant polyatomic lattice (one sublattice per site). \\
 \code{make\_bulk(lat=None)} & Bulk builder with 2D symmetry (template for \code{fill}). \\
-\code{bulk\_hk(kfrac)} & Bulk $H(\mathbf{k})$, $\mathbf{k}$ fractional (NumPy only). \\
+\code{bulk\_hk(kfrac)}, \code{bulk\_sk(kfrac)} & Bulk $H(\mathbf{k})$ and $S(\mathbf{k})$,
+  $\mathbf{k}$ fractional (NumPy only). \\
+\code{bulk\_bands(kfrac)} & Bulk eigenvalues (generalized problem if $S\neq\mathbb{1}$). \\
 \code{ribbon\_period(kind)} & Period vector for \code{"zigzag"} ($\mathbf{a}_1$),
   \code{"armchair"} (shortest integer vector $\perp\mathbf{a}_1$) or any \code{(m, n)}. \\
 \code{make\_ribbon(kind, width, supercell=1)} & Infinite ribbon of width \code{width} (\AA). \\
-\code{ribbon\_hk(rib)}, \code{ribbon\_bands(rib, nk)} & Exact ribbon $H(k)$ and bands for any
-  hopping range. \\
+\code{ribbon\_hsk(rib)}, \code{ribbon\_bands(rib, nk)} & Exact ribbon $H(k)$, $S(k)$ and
+  bands for any hopping range (generalized problem if $S\neq\mathbb{1}$). \\
 \code{min\_supercell(kind, width)} & Smallest lead supercell that Kwant can finalize. \\
 \code{make\_two\_terminal(kind, width, length)} & Scattering region and two ribbon leads. \\
 \code{conductance(syst, energies, nproc)} & $T_{0\to1}(E)$ in $e^2/h$ (no spin factor),
@@ -387,7 +551,7 @@ Function & Description \\
 python kwant_model.py [--width-zz W] [--width-ac W] [--emin E] [--emax E]
                       [--nk NK] [--no-transport] [--ne NE] [--length L]
                       [--nproc P] [--hop-cutoff X] [-o FIGURE]
-python kwant_model.py --iv [--vmax V] [--nv NV] [--de DE] [--temperature K]
+python kwant_model.py --iv [--vrange VMIN VMAX] [--nv NV] [--de DE] [--temperature K]
                       [--hop-cutoff X] [--length L] [--nproc P] [-o FIGURE]
 \end{lstlisting}
 Widths and lengths are in \AA{} (default 20 and 30). The energy window defaults to
@@ -397,9 +561,13 @@ is the figure (default \code{bands\_ribbons.png}) and, when transport is enabled
 $T_\text{armchair}$.
 
 With \code{--iv}, the script skips the band plots. It computes $T(E)$ on a fine grid
-(step \code{--de}, default 0.01\,eV) and the $I$--$V$ curves from 0 to \code{--vmax}
-(default 3\,V) at \code{--temperature} (default 300\,K), using the method of
-Section~\ref{sec:iv}. If \code{--hop-cutoff} is not given, it uses $10^{-3}$\,eV. The
+(step \code{--de}, default 0.01\,eV) and the $I$--$V$ curves at \code{--temperature}
+(default 300\,K), using the method of Section~\ref{sec:iv}. The bias range is set with
+\code{--vrange VMIN VMAX}. The default is 0 to 3\,V; \code{--vmax V} is a shortcut for
+\code{--vrange 0 V}. Negative biases are allowed: with symmetric bias $I(-V)=-I(V)$. The
+energy window of $T(E)$ automatically covers
+$E_F \pm [\max(|V_\text{min}|,|V_\text{max}|)/2 + 10k_BT]$. The number of bias points is
+set with \code{--nv} (default 61). If \code{--hop-cutoff} is not given, it uses $10^{-3}$\,eV. The
 outputs are \code{iv\_ribbons.png}, \code{iv\_ribbons\_T.dat} and \code{iv\_ribbons\_IV.dat}.
 
 \subsection{Ribbon geometry}
@@ -574,12 +742,98 @@ to band edges, which the 31\,meV band shifts move across the sampled energy. The
 curves are therefore reliable on the scale of the figure. For quantitative work, repeat the
 calculation with \code{--hop-cutoff 0}.
 
+\subsection{Non-orthogonal basis: MoS$_2$ from YAeHMOP}\label{sec:val-nonortho}
+The non-orthogonal path is validated with an extended-Hückel model of monolayer MoS$_2$
+produced by YAeHMOP and \code{yaehmop2wtb}. The basis has 17 orbitals (Mo 5s5p4d, S 3s3p),
+with neighbour overlaps up to $|S|=0.44$, which makes it a demanding test. The positions
+come from \code{basis\_set-NP}. The data are in \code{tests/data/mos2\_yaehmop\_np}, and
+\code{tests/validate\_mos2\_yaehmop\_np.py} reproduces everything below in about 3\,minutes.
+To keep the test fast, the transport calculations use narrow ribbons ($W=12$\,\AA) and a
+short-range Hamiltonian (cutoff $10^{-3}$\,eV on $H$ and $10^{-4}$ on $S$).
+
+\paragraph{Bulk bands.} The generalized eigenvalues agree with YAeHMOP, with energies
+measured from the VBM, to 0.008\,meV in the window VBM$-6$\ldots VBM$+4$\,eV without
+cutoffs. The gap is reproduced to six decimals (2.312981\,eV). With the default cutoffs
+($10^{-5}$\,eV, $10^{-6}$) the error is 0.1\,meV. With the short-range model used below
+it is 11\,meV in the window and larger for the high-lying antibonding bands, as expected
+from the $E\,\delta S$ sensitivity (Figure~\ref{fig:yae-bulk}).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/bulk_bands_vs_yaehmop.png}
+\caption{Bulk MoS$_2$ with the non-orthogonal extended-Hückel basis: YAeHMOP (grey) and
+the generated Kwant script (red dashed, short-range model).}
+\label{fig:yae-bulk}
+\end{figure}
+
+\paragraph{Energy-dependent terms and transmission.}
+\begin{itemize}[nosep]
+  \item In a finite flake built from the bulk template, all checked hopping functions
+        return $(H-E_FS)-ES$ at three energies (285/285).
+  \item For both 12\,\AA{} ribbons (Figure~\ref{fig:yae-ribbons}), the Kwant transmission
+        computed with $H'=H-E(S-\mathbb{1})$ equals, at all 41 energies, the number of
+        right-moving bands of the generalized ribbon problem. The difference is exactly
+        zero. This is the end-to-end test of the exact substitution of
+        Section~\ref{sec:nonortho}.
+  \item The Landauer $I$--$V$ curves (Figure~\ref{fig:yae-iv}) took 11\,s.
+\end{itemize}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/yaehmop_bands_ribbons.png}
+\caption{Non-orthogonal MoS$_2$ ribbons ($W=12$\,\AA, extended Hückel): generalized band
+structures and Kwant transmission obtained with $H-E(S-\mathbb{1})$ (blue), compared with
+the number of open channels (grey).}
+\label{fig:yae-ribbons}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/yaehmop_iv_ribbons.png}
+\caption{Transmission and Landauer $I$--$V$ curves of the non-orthogonal MoS$_2$ ribbons
+(300\,K, rigid band).}
+\label{fig:yae-iv}
+\end{figure}
+
+\paragraph{Löwdin orthogonalization: a negative result, kept as a warning.}
+In the bulk, the Löwdin model converges to the exact bands as its cutoff decreases. The
+error off the mesh is 56, 6.6 and 1.0\,meV for cutoffs of $10^{-3}$, $10^{-4}$ and
+$10^{-5}$\,eV, which confirms the implementation. The price is the range: 865
+$\mathbf{R}$ vectors instead of 55, and lead supercells 3 times larger.
+
+In the ribbons, however, the Löwdin bands are wrong by up to 2.2\,eV
+(Figure~\ref{fig:yae-lowdin}). The cause is the on-site renormalization. With overlaps of
+0.44, the Löwdin on-site energies absorb the bulk environment: Mo 5s goes from 0.22 to
+24\,eV, Mo 5p from 2.6 to 26--50\,eV, and S 3s from $-12.05$ to $-7.74$\,eV. In the bulk
+these huge shifts are compensated by the Löwdin hoppings to the neighbours. At an edge
+the neighbours are missing and the compensation does not happen. In a 12\,\AA{} ribbon
+almost every atom is close to an edge, so the whole spectrum is distorted.
+
+\textbf{Conclusion:} for strongly non-orthogonal bases, such as extended Hückel and
+diffuse Gaussian or numerical basis sets, Löwdin orbitals are a valid representation of
+the \emph{bulk} only. They should not be used to cut nanostructures. The option is kept in
+\tool{} as an experimental tool and as a reminder of this problem. The default (keep $S$
+and use $H-E(S-\mathbb{1})$) is exact.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/yaehmop_lowdin_vs_nonortho.png}
+\caption{Ribbon bands of non-orthogonal MoS$_2$: exact generalized problem (grey) and the
+model orthogonalized in the bulk with Löwdin, then cut (red dashed). The Löwdin
+orbitals carry bulk-renormalized on-site energies that are not compensated at the
+edges.}
+\label{fig:yae-lowdin}
+\end{figure}
+
 \subsection{Running the tests}
 \begin{lstlisting}[language=bash]
-python -m pytest tests -q            # fast regression tests
-python tests/validate_mos2_np.py     # full report (several minutes)
+python -m pytest -q                         # fast regression tests (~20 s)
+python tests/validate_mos2_np.py            # Wannier90 MoS2, full report (~13 min)
+python tests/validate_mos2_yaehmop_np.py    # non-orthogonal MoS2 (~3 min)
 \end{lstlisting}
-Both scripts use the MoS$_2$ data set that ships with the repository in
+\code{validate\_mos2\_yaehmop\_np.py} (non-orthogonal, about 3\,min) uses
+\code{tests/data/mos2\_yaehmop\_np} (override with \code{WTB2KWANT\_MOS2\_YAEHMOP\_DIR}).
+The Wannier scripts use the MoS$_2$ data set that ships with the repository in
 \code{tests/data/mos2\_np/} (\code{tb\_hr.dat}, \code{wannier90.wout}, \code{wannier90.win}
 and the Wannier90 band-structure files). To use another data set, set the environment
 variable \code{WTB2KWANT\_MOS2\_DIR}. The validation script accepts \code{--quick} (no
@@ -593,15 +847,22 @@ run takes about 13\,min on 12 cores.
   \item \textbf{$I$--$V$ beyond the rigid-band picture:} include a bias-dependent
         electrostatic potential (for example a linear drop or a self-consistent
         Poisson solution) as on-site terms that depend on Kwant \code{params}.
-  \item \textbf{Non-orthogonal Hamiltonians (SIESTA, \code{tb-*.ham}).} Kwant has no
-        overlap matrix. At a fixed energy $E$, the generalized problem
-        $(H-ES)\psi=0$ is equivalent to $(H'-E)\psi=0$ with
-        \begin{equation}
-          H' = H - E\,(S - \mathbb{1}).
-        \end{equation}
-        The plan is to make the on-site terms and hoppings functions of $E$ passed through
-        \code{params}. This gives exact transmissions. Bands and DOS require solving the
-        generalized eigenproblem directly.
+  \item \textbf{Non-orthogonal bases:} adapt \code{kwant.operator} densities and
+        currents to the metric $S$; validate SOC and the remaining interfaces (SIESTA,
+        DFTB+) with reference band structures.
+  \item \textbf{Pending tests:}
+        \begin{itemize}[nosep]
+          \item validate SP and SOC against reference bands. Data already exist for
+                YAeHMOP MoS$_2$ SOC, CRYSTAL h-BN SP and FHI-aims graphene SP; a
+                Wannier90 SP data set with two \code{.wout} files is still needed;
+          \item validate the SIESTA and DFTB+ inputs on 2D systems. The available SIESTA
+                example (Sn$_3$O$_4$) is 3D, and the DFTB+ example has no geometry;
+          \item add reduced FHI-aims and CRYSTAL data sets, with reference bands, to the
+                automated tests. So far they were checked by hand: the graphene Dirac point
+                at $E_F$ and the h-BN spin degeneracy;
+          \item rerun \code{tests/validate\_mos2\_np.py} with v0.2. The stored report was
+                generated with v0.1.
+        \end{itemize}
   \item \textbf{Nanotubes:} roll the 2D sheet along a chiral vector $\mathbf{C}_h=(n,m)$
         with periodic boundary conditions, neglecting curvature corrections to the
         hoppings.
@@ -623,6 +884,8 @@ wtb2kwant/
   wtb2kwant/cli.py        command-line interface
   tests/                  pytest tests, validation script and results
   tests/data/mos2_np/     MoS2 test data (Wannier90/VASP)
+  tests/data/mos2_yaehmop_np/  MoS2 test data (YAeHMOP, non-orthogonal)
+  wtb2kwant/lowdin.py     Lowdin orthogonalization (experimental)
   bin/                    launchers written by install.sh (not versioned)
   manual/                 this manual (LaTeX)
   install.sh              conda installer

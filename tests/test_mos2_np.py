@@ -89,3 +89,8 @@ def test_parallel_conductance_and_iv(tmp_path):
     Eg = np.linspace(-2, 2, 4001)
     I = km.landauer_current(Eg, np.ones_like(Eg), [1.0])
     assert abs(I[0] - 2 * 38.7404585) < 1e-3
+    # bias simétrico: I(-V) = -I(V) para qualquer T(E) (intervalo com bias negativo)
+    Tr = 1 + np.sin(3 * Eg) ** 2
+    V = np.array([-1.5, -0.4, 0.4, 1.5])
+    Iv = km.landauer_current(Eg, Tr, V)
+    assert np.allclose(Iv[:2], -Iv[:1:-1])
