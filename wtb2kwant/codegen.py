@@ -84,6 +84,7 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('    python kwant_model.py                          # bandas + transmissão das fitas ZZ e AC (W = 20 Å)')
     w('    python kwant_model.py --no-transport           # só bandas (rápido)')
     w('    python kwant_model.py --iv                     # curva I-V (0-3 V) das duas fitas')
+    w('    python kwant_model.py --iv --vrange -1 2       # I-V num intervalo de bias escolhido')
     w('    python kwant_model.py --width-zz 30 --width-ac 25 --emin -2 --emax 2 -o bandas.png')
     w('    python kwant_model.py --help                   # lista todas as opções')
     w('')
@@ -639,8 +640,9 @@ def landauer_current(energies, trans, biases, kT=0.025852, spin_degeneracy=None,
 
 
 def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
-           nproc=None, output="iv_ribbons.png"):
-    """T(E) numa malha fina + curva I-V para as fitas zigzag e armchair.
+           nproc=None, output="iv_ribbons.png", vmin=0.0):
+    """T(E) numa malha fina + curva I-V (bias de vmin a vmax, em V) para as fitas
+    zigzag e armchair. Bias negativo é permitido (a corrente troca de sinal).
 
     Usa HOP_CUTOFF (defina antes de chamar) para baratear o cálculo.
     Salva a figura e os arquivos <output>_T.dat e <output>_IV.dat.
@@ -652,9 +654,11 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
 
     kT = 8.617333e-5 * temperature
     mu0 = 0.0 if SHIFT_TO_FERMI else EFERMI
-    emax = vmax / 2 + 10 * kT + de
+    if vmax <= vmin:
+        raise ValueError(f"intervalo de bias inválido: vmin = {vmin} >= vmax = {vmax}")
+    emax = max(abs(vmin), abs(vmax)) / 2 + 10 * kT + de
     energies = mu0 + np.arange(-emax, emax + de / 2, de)
-    biases = np.linspace(0.0, vmax, nv)
+    biases = np.linspace(vmin, vmax, nv)
     res = {}
     for kind, width in zip(("zigzag", "armchair"), widths):
         t0 = time.time()
@@ -678,8 +682,12 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     a1.legend(fontsize=8)
     a2.set_xlabel("bias $V$ (V)")
     a2.set_ylabel(r"current $I$ ($\mu$A)")
-    a2.set_xlim(0, vmax)
-    a2.set_ylim(bottom=0)
+    a2.set_xlim(vmin, vmax)
+    if vmin >= 0:
+        a2.set_ylim(bottom=0)
+    else:
+        a2.axhline(0, color="k", lw=0.5)
+        a2.axvline(0, color="k", lw=0.5)
     a2.set_title(f"Landauer I-V, rigid band, symmetric bias, T = {temperature:g} K",
                  fontsize=10)
     a2.legend(fontsize=8)
@@ -710,7 +718,8 @@ def main():
                "  python %(prog)s --no-transport       # só bandas (rápido)\n"
                "  python %(prog)s --width-zz 30 --width-ac 25 -o fitas.png\n"
                "  python %(prog)s --emin -1.5 --emax 1.5 --ne 121 --nproc 8\n"
-               "  python %(prog)s --iv                 # T(E) + curva I-V (0-3 V, cutoff 1e-3)\n\n"
+               "  python %(prog)s --iv                 # T(E) + curva I-V (0-3 V, cutoff 1e-3)\n"
+               "  python %(prog)s --iv --vrange -1 2 --nv 31   # I-V de -1 a 2 V\n\n"
                "Saídas: figura (-o) e, com transporte, um .dat com E, T_zigzag, T_armchair.\n"
                "Transmissão em unidades de e^2/h, sem fator de spin; a região de\n"
                "espalhamento é a própria fita (perfeita): edite make_two_terminal() para\n"
@@ -733,8 +742,11 @@ def main():
                     help="base não ortogonal: descarta |S| < X [0; 1e-4 com --iv]")
     ap.add_argument("--iv", action="store_true",
                     help="em vez das bandas, calcula T(E) fino e a curva I-V das duas fitas "
-                         "(usa --hop-cutoff 1e-3 se não for dado)")
-    ap.add_argument("--vmax", type=float, default=3.0, help="bias máximo do I-V em V [3]")
+                         "no intervalo --vrange (usa --hop-cutoff 1e-3 se não for dado)")
+    ap.add_argument("--vrange", type=float, nargs=2, metavar=("VMIN", "VMAX"), default=None,
+                    help="intervalo de bias do I-V em V, ex.: --vrange -1 2 [0 3]")
+    ap.add_argument("--vmax", type=float, default=3.0,
+                    help="bias máximo do I-V em V (equivale a --vrange 0 VMAX) [3]")
     ap.add_argument("--nv", type=int, default=61, help="número de pontos de bias [61]")
     ap.add_argument("--de", type=float, default=0.01, help="passo de energia de T(E) no I-V, eV [0.01]")
     ap.add_argument("--temperature", type=float, default=300.0, help="temperatura do I-V em K [300]")
@@ -752,8 +764,9 @@ def main():
             HOP_CUTOFF = 1e-3
         if args.ovl_cutoff is None and NONORTHOGONAL:
             OVL_CUTOFF = 1e-4
-        run_iv((args.width_zz, args.width_ac), args.vmax, args.nv, args.de, args.length,
-               args.temperature, args.nproc, args.output or "iv_ribbons.png")
+        vmin, vmax = args.vrange if args.vrange else (0.0, args.vmax)
+        run_iv((args.width_zz, args.width_ac), vmax, args.nv, args.de, args.length,
+               args.temperature, args.nproc, args.output or "iv_ribbons.png", vmin=vmin)
         return
     if args.output is None:
         args.output = "bands_ribbons.png"

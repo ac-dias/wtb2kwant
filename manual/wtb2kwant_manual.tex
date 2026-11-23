@@ -551,7 +551,7 @@ Function & Description \\
 python kwant_model.py [--width-zz W] [--width-ac W] [--emin E] [--emax E]
                       [--nk NK] [--no-transport] [--ne NE] [--length L]
                       [--nproc P] [--hop-cutoff X] [-o FIGURE]
-python kwant_model.py --iv [--vmax V] [--nv NV] [--de DE] [--temperature K]
+python kwant_model.py --iv [--vrange VMIN VMAX] [--nv NV] [--de DE] [--temperature K]
                       [--hop-cutoff X] [--length L] [--nproc P] [-o FIGURE]
 \end{lstlisting}
 Widths and lengths are in \AA{} (default 20 and 30). The energy window defaults to
@@ -561,9 +561,13 @@ is the figure (default \code{bands\_ribbons.png}) and, when transport is enabled
 $T_\text{armchair}$.
 
 With \code{--iv}, the script skips the band plots. It computes $T(E)$ on a fine grid
-(step \code{--de}, default 0.01\,eV) and the $I$--$V$ curves from 0 to \code{--vmax}
-(default 3\,V) at \code{--temperature} (default 300\,K), using the method of
-Section~\ref{sec:iv}. If \code{--hop-cutoff} is not given, it uses $10^{-3}$\,eV. The
+(step \code{--de}, default 0.01\,eV) and the $I$--$V$ curves at \code{--temperature}
+(default 300\,K), using the method of Section~\ref{sec:iv}. The bias range is set with
+\code{--vrange VMIN VMAX}. The default is 0 to 3\,V; \code{--vmax V} is a shortcut for
+\code{--vrange 0 V}. Negative biases are allowed: with symmetric bias $I(-V)=-I(V)$. The
+energy window of $T(E)$ automatically covers
+$E_F \pm [\max(|V_\text{min}|,|V_\text{max}|)/2 + 10k_BT]$. The number of bias points is
+set with \code{--nv} (default 61). If \code{--hop-cutoff} is not given, it uses $10^{-3}$\,eV. The
 outputs are \code{iv\_ribbons.png}, \code{iv\_ribbons\_T.dat} and \code{iv\_ribbons\_IV.dat}.
 
 \subsection{Ribbon geometry}
@@ -846,6 +850,19 @@ run takes about 13\,min on 12 cores.
   \item \textbf{Non-orthogonal bases:} adapt \code{kwant.operator} densities and
         currents to the metric $S$; validate SOC and the remaining interfaces (SIESTA,
         DFTB+) with reference band structures.
+  \item \textbf{Pending tests:}
+        \begin{itemize}[nosep]
+          \item validate SP and SOC against reference bands. Data already exist for
+                YAeHMOP MoS$_2$ SOC, CRYSTAL h-BN SP and FHI-aims graphene SP; a
+                Wannier90 SP data set with two \code{.wout} files is still needed;
+          \item validate the SIESTA and DFTB+ inputs on 2D systems. The available SIESTA
+                example (Sn$_3$O$_4$) is 3D, and the DFTB+ example has no geometry;
+          \item add reduced FHI-aims and CRYSTAL data sets, with reference bands, to the
+                automated tests. So far they were checked by hand: the graphene Dirac point
+                at $E_F$ and the h-BN spin degeneracy;
+          \item rerun \code{tests/validate\_mos2\_np.py} with v0.2. The stored report was
+                generated with v0.1.
+        \end{itemize}
   \item \textbf{Nanotubes:} roll the 2D sheet along a chiral vector $\mathbf{C}_h=(n,m)$
         with periodic boundary conditions, neglecting curvature corrections to the
         hoppings.

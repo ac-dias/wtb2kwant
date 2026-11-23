@@ -88,6 +88,7 @@ wtb2kwant tb_hr.dat --wout wannier90.wout -o kwant_model.py
 python kwant_model.py
 python kwant_model.py --no-transport                 # bands only (seconds)
 python kwant_model.py --iv                           # Landauer I-V, 0-3 V (cheap Hamiltonian)
+python kwant_model.py --iv --vrange -1 2 --nv 31     # I-V in a chosen bias range
 python kwant_model.py --width-zz 30 --width-ac 25 --emin -2 --emax 2 --ne 81
 python kwant_model.py --help
 ```
@@ -109,7 +110,8 @@ cheaper Hamiltonian, with hoppings below 10⁻³ eV dropped by default; change t
 I(V) = g_s (e/h) ∫ T(E) [f(E − E_F − V/2) − f(E − E_F + V/2)] dE
 
 in the rigid-band approximation (T(E) computed at zero bias, symmetric bias, 300 K by
-default), for 0 to 3 V. The outputs are `iv_ribbons.png`, `iv_ribbons_T.dat` and
+default). The default bias range is 0 to 3 V; choose another one with `--vrange VMIN VMAX`
+(negative biases allowed). The outputs are `iv_ribbons.png`, `iv_ribbons_T.dat` and
 `iv_ribbons_IV.dat`.
 
 ![MoS2 I-V](manual/figures/iv_ribbons.png)
@@ -208,6 +210,21 @@ API of the generated script, and the validation.
 - The scissors operator is recorded in the generated script but not applied.
 - Non-orthogonal bases: Kwant operators (local DOS, currents) are not yet adapted to S.
 - Planned: nanotubes; 3D bulk crystals and slabs.
+
+### Pending tests
+
+- **SP and SOC:** validate against reference band structures.
+  - Wannier90 SP with two `.wout` files: no data set yet.
+  - SOC: the YAeHMOP MoS₂ SOC data already exist.
+  - SP: the CRYSTAL h-BN and FHI-aims graphene data already exist.
+- **SIESTA and DFTB+ inputs:** validate with 2D test cases. The available SIESTA example
+  (Sn₃O₄) is 3D, and the DFTB+ example has no geometry file.
+- **FHI-aims and CRYSTAL:** reading and positions were checked by hand (graphene Dirac
+  point, h-BN spin degeneracy). Add reduced versions of these data sets to the automated
+  tests, together with reference bands.
+- **Wannier90 validation report:** rerun `tests/validate_mos2_np.py` with v0.2.
+  `tests/results/mos2_np/` was generated with v0.1; the code paths are unchanged, and the
+  pytest suite already covers v0.2.
 
 ## License
 
