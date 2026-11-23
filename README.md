@@ -1,0 +1,174 @@
+# wtb2kwant
+
+**wtb2kwant** converts tight-binding Hamiltonians in the
+[WanTiBEXOS](https://github.com/ac-dias/wantibexos) format into a
+self-contained **[Kwant](https://kwant-project.org) Python script**. You can then use
+that script to compute band structures and quantum transport in nanoribbons and other
+nanostructures cut from the original crystal.
+
+```
+tb_hr.dat + wannier90.wout  ──►  wtb2kwant  ──►  kwant_model.py  ──►  ribbons, leads, G(E), ...
+```
+
+The generated script embeds the converted parameters (lattice, orbital positions,
+on-site blocks and hopping blocks). It needs only `numpy`, `kwant` and `matplotlib`,
+so you can copy it, share it and modify it freely.
+
+## Features
+
+- Reads the WanTiBEXOS **Wannier90-type** Hamiltonian (`tb_hr.dat`, produced by
+  `param_gen_vasp`). The spin types are NP, SP and SOC.
+- Reads the **Wannier centres, atoms and lattice** directly from `wannier90.wout`, so you
+  don't have to rerun Wannier90. For spin-polarized runs it takes two `.wout` files
+  (up and down).
+- Assigns each Wannier function to its nearest atom. Kwant sites are atoms with
+  `norbs` orbitals each. Alternatively, `--sites centres` makes one site per Wannier
+  function.
+- **Folds Wannier centres back into the home cell and corrects the R vectors
+  accordingly**, so cuts in real space (ribbon edges) are physically correct.
+- Divides by the Wannier90 degeneracy weights, symmetrizes, and applies an energy cutoff
+  for small matrix elements.
+- Handles **long-range Wannier hoppings**:
+  - ribbon bands are computed from a Bloch Hamiltonian built with the primitive period,
+    so they are not folded;
+  - leads automatically use the smallest supercell that Kwant can finalize.
+- The generated script provides `make_ribbon`, `ribbon_bands`, `make_two_terminal`,
+  `conductance` (parallel), `channel_count`, `bulk_hk` and more, plus a ready-to-run
+  example: zigzag and armchair ribbon bands with the Kwant transmission.
+
+## Installation
+
+The easiest way is the installer. It uses a conda environment named `kwant` and creates
+it from conda-forge if it does not exist:
+
+```bash
+git clone https://github.com/ac-dias/wtb2kwant.git
+cd wtb2kwant
+./install.sh            # options: --env NAME, --no-editable, --dev, --python X.Y
+conda activate kwant
+```
+
+The installer also writes launchers into `bin/` that call the environment's Python
+directly. If you add that folder to your `PATH`, you can use the tool without activating
+conda:
+
+```bash
+export PATH="$PWD/bin:$PATH"                      # e.g. in ~/.bashrc
+wtb2kwant tb_hr.dat --wout wannier90.wout -o kwant_model.py
+wtb2kwant-python kwant_model.py --help            # runs scripts with the env's Python
+```
+
+The launchers are machine-specific, so they are not versioned: `bin/` contains only its
+own `.gitignore`.
+
+Manual installation, in any environment that has Kwant:
+
+```bash
+conda create -n kwant -c conda-forge python=3.12 kwant numpy matplotlib
+conda activate kwant
+pip install -e .
+```
+
+## Quick start
+
+```bash
+# 1. Convert (in the folder of your Wannier90/WanTiBEXOS calculation)
+wtb2kwant tb_hr.dat --wout wannier90.wout -o kwant_model.py
+
+# 2. Built-in example: bands + Kwant transmission of zigzag and armchair
+#    ribbons (20 Å wide) -> bands_ribbons.png + bands_ribbons_transmission.dat
+python kwant_model.py
+python kwant_model.py --no-transport                 # bands only (seconds)
+python kwant_model.py --iv                           # Landauer I-V, 0-3 V (cheap Hamiltonian)
+python kwant_model.py --width-zz 30 --width-ac 25 --emin -2 --emax 2 --ne 81
+python kwant_model.py --help
+```
+
+The transmission is parallelized over energies. By default it uses about one process
+per physical core; set it with `--nproc`. For the MoS₂ example (61 energies,
+11 orbitals per cell), each ribbon takes about 4 minutes on a 12-core workstation.
+For quick scans, `--hop-cutoff 1e-3` drops small hoppings: it is about 4× faster but
+less accurate.
+
+![MoS2 ribbons](manual/figures/bands_ribbons.png)
+
+### Current–voltage curves
+
+`python kwant_model.py --iv` computes the transmission on a fine energy grid. It uses a
+cheaper Hamiltonian, with hoppings below 10⁻³ eV dropped by default; change this with
+`--hop-cutoff`. It then computes the Landauer current
+
+I(V) = g_s (e/h) ∫ T(E) [f(E − E_F − V/2) − f(E − E_F + V/2)] dE
+
+in the rigid-band approximation (T(E) computed at zero bias, symmetric bias, 300 K by
+default), for 0 to 3 V. The outputs are `iv_ribbons.png`, `iv_ribbons_T.dat` and
+`iv_ribbons_IV.dat`.
+
+![MoS2 I-V](manual/figures/iv_ribbons.png)
+
+Transport, using the generated script as a module:
+
+```python
+from kwant_model import make_two_terminal, conductance
+
+syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()
+T = conductance(syst, [-0.5, 0.0, 0.5])   # energies relative to E_F (eV)
+```
+
+Spin-polarized calculations:
+
+```bash
+wtb2kwant tb_hr.dat --wout wannier90.up.wout wannier90.dn.wout -o kwant_model.py
+```
+
+### Command-line options
+
+| option | default | description |
+|---|---|---|
+| `input` | – | WanTiBEXOS Hamiltonian file (`tb_hr.dat`) |
+| `--wout F [F]` | required | `wannier90.wout` (two files, up then down, for SP) |
+| `--sites {atoms,centres}` | `atoms` | group Wannier functions by nearest atom, or one site per WF |
+| `--cutoff X` | `1e-5` | drop matrix elements with \|H\| < X (eV) |
+| `--efermi X` | from file | override the Fermi energy (eV) |
+| `-o FILE` | `kwant_model.py` | generated script |
+
+## Validation
+
+`tests/validate_mos2_np.py` runs a full validation on monolayer MoS₂ (Wannier90/VASP, 11
+orbitals). The input data ship with the repository in `tests/data/mos2_np/`. The script
+writes `tests/results/mos2_np/REPORT.md` and the figures. Summary:
+
+- **Bulk bands vs `wannier90_band.dat`:** 0.02 meV error without cutoff, 0.13 meV with the
+  default cutoff.
+- **Hopping orientation inside Kwant:** 660 of 660 blocks are correct; the `wraparound`
+  bands agree to 10⁻¹⁴ eV.
+- **Ribbon bands:** the primitive-period Bloch Hamiltonian matches `kwant.physics.Bands`
+  on the supercell to 10⁻¹⁴ eV.
+- **Transmission of perfect ribbons:** an integer equal to the number of open channels.
+- **Landauer current:** reproduces the analytic case T = 1, where I/V = 2e²/h.
+
+```bash
+python -m pytest tests -q          # quick regression tests
+python tests/validate_mos2_np.py   # full report (~13 min on 12 cores; --quick ~5 min)
+```
+
+## Documentation
+
+The full manual (in English) is in [`manual/`](manual/): `manual/wtb2kwant_manual.pdf`.
+It covers the input formats, the conventions, how the folding and supercells work, the
+API of the generated script, and the validation.
+
+## Current limitations and roadmap
+
+- Supported: Wannier90-type WanTiBEXOS input; 2D crystals (ribbons).
+- SP and SOC are implemented, but have not yet been validated against reference data.
+- The scissors operator in `tb_hr.dat` is recorded in the generated script but not applied.
+- Planned:
+  - the non-orthogonal (localized-basis, e.g. SIESTA) format, using the exact transport
+    substitution H′ = H − E(S − 1);
+  - nanotubes;
+  - 3D bulk crystals and slabs.
+
+## License
+
+wtb2kwant is released under the [MIT License](LICENSE).

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+# LaTeX
+manual/*.aux
+manual/*.log
+manual/*.out
+manual/*.toc
+manual/*.fls
+manual/*.fdb_latexmk
+manual/*.synctex.gz
+# notas locais do Claude Code (caminhos e ambiente desta máquina)
+CLAUDE.md
+.claude/
