@@ -6,9 +6,23 @@ self-contained **[Kwant](https://kwant-project.org) Python script**. You can the
 that script to compute band structures and quantum transport in nanoribbons and other
 nanostructures cut from the original crystal.
 
+It accepts both kinds of WanTiBEXOS Hamiltonians:
+
+- **orthogonal** Wannier90-type Hamiltonians (`tb_hr.dat`);
+- **non-orthogonal** Hamiltonians with an overlap matrix S (`.ham`), written by the
+  SIESTA, DFTB+, FHI-aims, CRYSTAL and YAeHMOP interfaces. Transport with these
+  Hamiltonians is exact: the overlap is kept, not approximated.
+
 ```
-tb_hr.dat + wannier90.wout  ──►  wtb2kwant  ──►  kwant_model.py  ──►  ribbons, leads, G(E), ...
+tb_hr.dat + wannier90.wout        ─┐
+                                   ├─►  wtb2kwant  ──►  kwant_model.py  ──►  ribbons, leads, G(E), ...
+tb-*.ham  + basis or structure    ─┘
 ```
+
+> **New in v0.2:** support for non-orthogonal Hamiltonians (`.ham` + overlap S), with
+> exact transport and generalized band structures. See
+> [Non-orthogonal Hamiltonians](#non-orthogonal-hamiltonians) below and Section 4.3 of the
+> [manual](manual/wtb2kwant_manual.pdf).
 
 The generated script embeds the converted parameters (lattice, orbital positions,
 on-site blocks and hopping blocks). It needs only `numpy`, `kwant` and `matplotlib`,
@@ -131,7 +145,11 @@ Spin-polarized calculations:
 wtb2kwant tb_hr.dat --wout wannier90.up.wout wannier90.dn.wout -o kwant_model.py
 ```
 
-Non-orthogonal Hamiltonians (the format is detected automatically):
+### Non-orthogonal Hamiltonians
+
+The format is detected automatically. Kwant needs to know on which atom each orbital
+sits, so give the orbital positions with `--basis` (SIESTA, YAeHMOP) or with
+`--structure` plus the number of orbitals per spin of each species (`--norb`):
 
 ```bash
 wtb2kwant tb-NP.ham --basis basis_set-NP.basis                 # SIESTA, YAeHMOP

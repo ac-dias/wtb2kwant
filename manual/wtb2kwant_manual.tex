@@ -64,7 +64,11 @@ The \wtb{} code reads TB Hamiltonians from two sources:
 semi-infinite nanostructures (nanoribbons, constrictions, devices with leads) cut from the
 parent crystal. The workflow is
 \begin{center}
-\code{tb\_hr.dat} + \code{wannier90.wout} $\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
+\begin{tabular}{l}
+\code{tb\_hr.dat} + \code{wannier90.wout} \\
+\code{tb-*.ham} + \code{.basis} or structure file
+\end{tabular}
+$\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
 \code{kwant\_model.py} $\;\longrightarrow\;$ bands, $T(E)$, \dots
 \end{center}
 
@@ -171,6 +175,28 @@ For spin-polarized calculations, give the two \code{.wout} files, spin up first:
 \begin{lstlisting}[language=bash]
 wtb2kwant tb_hr.dat --wout wannier90.up.wout wannier90.dn.wout
 \end{lstlisting}
+
+\paragraph{Non-orthogonal Hamiltonians.} For a \code{.ham} file from a localized-basis
+interface, the format is detected automatically. Instead of \code{--wout}, give the
+orbital positions (Section~\ref{sec:ham}):
+\begin{lstlisting}[language=bash]
+# SIESTA and YAeHMOP write a .basis file with the orbital positions
+wtb2kwant tb-NP.ham --basis basis_set-NP.basis -o kwant_model.py
+
+# DFTB+, FHI-aims, CRYSTAL: crystal structure + orbitals per spin of each species
+wtb2kwant dftb.ham --structure geo.gen --norb Mo=9,S=4
+wtb2kwant hbn_sp_tb.ham --structure hbn_sp.out --norb B=14,N=14
+wtb2kwant fhi_tb.ham --structure geometry.in --efermi -5.0096   # E_F not in the file
+
+# the generated script is used exactly as in the orthogonal case
+python kwant_model.py
+\end{lstlisting}
+The overlap matrix is kept, and transport is exact (Section~\ref{sec:nonortho}). In
+the script, the on-site terms and hoppings depend on the energy through the Kwant parameter
+\code{E}, and \code{conductance()} sets it automatically. Ribbon bands are computed from
+the generalized problem $H(k)c=E\,S(k)c$. Check the Fermi level: some interfaces write
+$E_F=0$ in the header, and then \code{--efermi} is needed.
+
 To use the script as a module:
 \begin{lstlisting}[language=Python]
 from kwant_model import make_ribbon, ribbon_bands, make_two_terminal, conductance
