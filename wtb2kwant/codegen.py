@@ -85,6 +85,8 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('    python kwant_model.py --no-transport           # só bandas (rápido)')
     w('    python kwant_model.py --iv                     # curva I-V (0-3 V) das duas fitas')
     w('    python kwant_model.py --iv --vrange -1 2       # I-V num intervalo de bias escolhido')
+    if model.systype in ("SP", "SOC"):
+        w('    (SP/SOC: T e I saem também por canal de spin; --no-spin desliga)')
     w('    python kwant_model.py --width-zz 30 --width-ac 25 --emin -2 --emax 2 -o bandas.png')
     w('    python kwant_model.py --help                   # lista todas as opções')
     w('')
@@ -92,7 +94,13 @@ def generate_script(model: TBModel, sources: list, imag_tol: float = 1e-5) -> st
     w('    from kwant_model import make_two_terminal, conductance')
     w('    syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()')
     w('    T = conductance(syst, [-0.5, 0.0, 0.5])   # energias relativas a E_F (eV), paralelo')
+    if model.systype in ("SP", "SOC"):
+        w('    from kwant_model import spin_conductance')
+        w('    Ts = spin_conductance(syst, [0.0])         # dict: total, uu, ud, du, dd, mix')
+        w('    # T[s\', s]: s = spin injetado no lead 0, s\' = spin coletado no lead 1')
     w('Funções: make_ribbon, ribbon_bands, ribbon_hsk, make_two_terminal, conductance, channel_count,')
+    w('         spin_conductance, spin_transmission, spin_channel_count, orbital_spins,')
+    w('         has_spin_labels,')
     w('         bulk_hk, bulk_sk, bulk_bands,')
     w('         landauer_current, run_iv,')
     w('         make_bulk, make_lattice, min_supercell, ribbon_period.')
@@ -435,6 +443,11 @@ def _ncpu():
     return max(1, n // 2)
 
 
+def _params(e):
+    """params do Kwant na energia e: H' = H - E (S - 1) na base não ortogonal."""
+    return dict(E=e) if NONORTHOGONAL else None
+
+
 def conductance(syst, energies, nproc=None):
     """Transmissão lead 0 -> 1 (unidades de e^2/h, sem fator de spin).
 
@@ -443,18 +456,112 @@ def conductance(syst, energies, nproc=None):
     trafegam pelas filas (nada de pickling de funções), com balanceamento
     dinâmico. Em sistemas sem fork o cálculo é serial.
     """
-    import multiprocessing as mp
     fsyst = syst.finalized() if not isinstance(syst, kwant.system.System) else syst
-    energies = list(energies)
-    nproc = min(_ncpu() if nproc is None else nproc, len(energies))
 
     def one(e):
-        if NONORTHOGONAL:      # H' = H - E (S - 1) avaliado na própria energia
-            return kwant.smatrix(fsyst, e, params=dict(E=e)).transmission(1, 0)
-        return kwant.smatrix(fsyst, e).transmission(1, 0)
+        return [kwant.smatrix(fsyst, e, params=_params(e)).transmission(1, 0)]
 
+    return _energy_map(one, energies, nproc)[:, 0]
+
+
+# ----------------------------------------------------------------------
+# Transporte resolvido em spin (SP e SOC)
+# ----------------------------------------------------------------------
+SPIN_KEYS = ("uu", "ud", "du", "dd")
+"""Componentes T[s', s]: s' = spin coletado no lead 1 (dreno), s = spin injetado
+no lead 0 (fonte). "ud" = entra dn, sai up (spin-flip)."""
+
+
+def orbital_spins():
+    """dict nome do site -> spin de cada orbital (+1 up, -1 dn, 0 sem rótulo),
+    lido dos prefixos 'up:'/'dn:' dos rótulos em SITES."""
+    return {s["name"]: np.array([1 if o.startswith("up:") else -1 if o.startswith("dn:") else 0
+                                 for o in s["orbitals"]]) for s in SITES}
+
+
+def has_spin_labels():
+    """True se o modelo tem spin explícito (SP ou SOC) e todo orbital é up ou dn."""
+    return SYSTYPE in ("SP", "SOC") and all(np.all(v != 0) for v in orbital_spins().values())
+
+
+def _interface_spins(fsyst, lead, spins):
+    """Spin de cada orbital da interface do lead (mesma ordem da autoenergia)."""
+    return np.concatenate([spins[fsyst.sites[i].family.name]
+                           for i in fsyst.lead_interfaces[lead]])
+
+
+def spin_transmission(fsyst, e, projection="sym", spins=None):
+    """[T, T_uu, T_ud, T_du, T_dd] na energia e (lead 0 -> 1), via NEGF:
+
+        T_s's = Tr[ Gamma_1^(s') G_10 Gamma_0^(s) G_10^+ ]
+
+    G_10 = função de Green entre as interfaces, Gamma = i (Sigma - Sigma^+).
+    projection = "sym" (padrão): Gamma^(s) = (P_s Gamma + Gamma P_s) / 2, análogo
+        da corrente de spin simetrizada {S_z, J}/2: a soma das quatro
+        componentes é exatamente T; com SOC forte o spin-flip pode sair
+        levemente negativo.
+    projection = "block": Gamma^(s) = P_s Gamma P_s (componentes >= 0). Os
+        blocos up-dn de Gamma ficam de fora, então com SOC a soma pode diferir
+        muito de T (veja "mix" em spin_conductance) perto de cruzamentos de
+        bandas com spins misturados.
+    Se os leads conservam S_z (SP, ou SOC sem termos S_x, S_y) as duas são
+    idênticas e exatas.
+    O spin de cada orbital vem dos rótulos up:/dn: (orbital_spins()); a base
+    não ortogonal não atrapalha porque S é diagonal em spin.
+    """
+    spins = orbital_spins() if spins is None else spins
+    gf = kwant.greens_function(fsyst, e, out_leads=[1], in_leads=[0], params=_params(e))
+    G = gf.submatrix(1, 0)
+    gam = [1j * (gf.lead_info[i] - gf.lead_info[i].conj().T) for i in (0, 1)]
+    sp = [_interface_spins(fsyst, i, spins) for i in (0, 1)]
+
+    def proj(i, s):
+        P = (sp[i] == s).astype(float)
+        if projection == "block":
+            return gam[i] * np.outer(P, P)
+        if projection == "sym":
+            return 0.5 * (P[:, None] * gam[i] + gam[i] * P[None, :])
+        raise ValueError(f"projection inválida: {projection}")
+
+    Gd = G.conj().T
+    out = [np.trace(gam[1] @ G @ gam[0] @ Gd).real]
+    for so, si in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        out.append(np.trace(proj(1, so) @ G @ proj(0, si) @ Gd).real)
+    return out
+
+
+def spin_conductance(syst, energies, nproc=None, projection="sym"):
+    """Transmissão resolvida em spin (SP/SOC), em paralelo como conductance().
+
+    Retorna dict com arrays: "total" (= conductance), "uu", "ud", "du", "dd"
+    (T[s', s], s' = spin no lead 1, s = spin injetado no lead 0; veja
+    spin_transmission) e "mix" = total - (uu + ud + du + dd).
+    SP: só uu e dd são não nulos (T_up = uu, T_dn = dd) e mix = 0.
+    """
+    if not has_spin_labels():
+        raise ValueError("o modelo não tem spin explícito com rótulos up:/dn: "
+                         "(NP, ou SOC do Wannier90 sem --soc-spin-order)")
+    fsyst = syst.finalized() if not isinstance(syst, kwant.system.System) else syst
+    spins = orbital_spins()
+    arr = _energy_map(lambda e: spin_transmission(fsyst, e, projection, spins), energies, nproc)
+    res = dict(total=arr[:, 0])
+    for n, k in enumerate(SPIN_KEYS):
+        res[k] = arr[:, n + 1]
+    res["mix"] = res["total"] - sum(res[k] for k in SPIN_KEYS)
+    return res
+
+
+def _energy_map(one, energies, nproc=None):
+    """Aplica one(e) -> lista de floats em cada energia; retorna array (nE, nout).
+
+    Processos com fork herdam o sistema finalizado (nada de pickling de
+    funções); só índices e números trafegam pelas filas. Sem fork: serial.
+    """
+    import multiprocessing as mp
+    energies = list(energies)
+    nproc = min(_ncpu() if nproc is None else nproc, len(energies))
     if nproc <= 1 or "fork" not in mp.get_all_start_methods():
-        return np.array([one(e) for e in energies])
+        return np.array([np.atleast_1d(one(e)) for e in energies], dtype=float)
 
     ctx = mp.get_context("fork")
     tasks, results = ctx.Queue(), ctx.Queue()
@@ -469,25 +576,25 @@ def conductance(syst, energies, nproc=None):
             if i is None:
                 break
             try:
-                results.put((i, float(one(energies[i])), None))
+                results.put((i, [float(x) for x in np.atleast_1d(one(energies[i]))], None))
             except Exception as err:          # devolve o erro ao processo pai
-                results.put((i, float("nan"), repr(err)))
+                results.put((i, None, repr(err)))
 
     procs = [ctx.Process(target=worker, daemon=True) for _ in range(nproc)]
     for p in procs:
         p.start()
-    out = np.empty(len(energies))
+    rows = [None] * len(energies)
     errors = []
     for _ in range(len(energies)):
         i, t, err = results.get()
-        out[i] = t
+        rows[i] = t
         if err:
             errors.append(f"E={energies[i]}: {err}")
     for p in procs:
         p.join()
     if errors:
-        raise RuntimeError("falha em conductance():\n" + "\n".join(errors[:5]))
-    return out
+        raise RuntimeError("falha no cálculo de transporte:\n" + "\n".join(errors[:5]))
+    return np.array(rows, dtype=float)
 
 
 def channel_count(rib, energies, nk=4001):
@@ -501,6 +608,65 @@ def channel_count(rib, energies, nk=4001):
     return np.array(out)
 
 
+def _ribbon_sites(rib):
+    """Sites do domínio fundamental na ordem usada por ribbon_hsk."""
+    return sorted(rib.sites(), key=lambda s: (s.family.name, tuple(s.tag)))
+
+
+def spin_channel_count(rib, energies, nk=4001):
+    """Canais (modos com dE/dk > 0) por spin, das bandas da fita: o valor esperado
+    de T_up e T_dn numa fita perfeita. Retorna dict "up", "dn" (arrays).
+
+    Se H(k) e S(k) não acoplam up e dn (SP, ou SOC só com S_z) as bandas de cada
+    bloco de spin são contadas separadamente: inteiros exatos. Com SOC geral cada
+    canal entra com o seu peso de spin <P_s> (Mulliken: Re c^+ P_s S c, com
+    c^+ S c = 1), média dos dois pontos k que cercam o cruzamento: a contagem
+    pode ser fracionária, e up + dn = channel_count.
+    """
+    from scipy.linalg import eigh
+    hk, sk = ribbon_hsk(rib)
+    spins = orbital_spins()
+    sp = np.concatenate([spins[s.family.name] for s in _ribbon_sites(rib)])
+    up = sp > 0
+    energies = np.atleast_1d(np.asarray(energies, dtype=float))
+    ks = np.linspace(-np.pi, np.pi, nk)
+    probe = [hk(k) for k in (0.3, 1.7)] + [sk(k) for k in (0.3, 1.7)]
+    conserved = max(np.abs(M[np.ix_(up, ~up)]).max() for M in probe) < 1e-12
+    out = {"up": np.zeros(len(energies)), "dn": np.zeros(len(energies))}
+
+    def crossings(Eprev, Ecur, wprev=None, wcur=None):
+        cross = ((Eprev[None, :] < energies[:, None])
+                 & (Ecur[None, :] > energies[:, None]))     # (nE, nbandas)
+        if wprev is None:
+            return cross.sum(axis=1)
+        return (cross * (0.5 * (wprev + wcur))[None, :]).sum(axis=1)
+
+    if conserved:
+        prev = {}
+        for k in ks:
+            Hk, Sk = hk(k), (sk(k) if NONORTHOGONAL else None)
+            for name, msk in (("up", up), ("dn", ~up)):
+                H = Hk[np.ix_(msk, msk)]
+                E = (eigh(H, Sk[np.ix_(msk, msk)], eigvals_only=True) if NONORTHOGONAL
+                     else np.linalg.eigvalsh(H))
+                if name in prev:
+                    out[name] += crossings(prev[name], E)
+                prev[name] = E
+        return out
+    prev = None
+    for k in ks:
+        H = hk(k)
+        S = sk(k) if NONORTHOGONAL else None
+        E, C = eigh(H, S) if NONORTHOGONAL else np.linalg.eigh(H)
+        SC = S @ C if NONORTHOGONAL else C
+        wup = np.real(np.sum(np.conj(C[up]) * SC[up], axis=0))
+        if prev is not None:
+            out["up"] += crossings(prev[0], E, prev[1], wup)
+            out["dn"] += crossings(prev[0], E, 1 - prev[1], 1 - wup)
+        prev = (E, wup)
+    return out
+
+
 def ribbon_hsk(rib):
     """Retorna (H(k), S(k)) da fita a partir de um builder com simetria 1D.
 
@@ -511,7 +677,7 @@ def ribbon_hsk(rib):
     D = S - 1 no on-site e D = S nos hoppings.
     """
     sym = rib.symmetry
-    sites = sorted(rib.sites(), key=lambda s: (s.family.name, tuple(s.tag)))
+    sites = _ribbon_sites(rib)
     off, n0 = {}, 0
     for s in sites:
         off[s] = n0
@@ -639,19 +805,52 @@ def landauer_current(energies, trans, biases, kT=0.025852, spin_degeneracy=None,
     return np.array(out)
 
 
+SPIN_LABELS = {"uu": r"$\uparrow\to\uparrow$", "dd": r"$\downarrow\to\downarrow$",
+               "ud": r"$\downarrow\to\uparrow$", "du": r"$\uparrow\to\downarrow$"}
+SPIN_STYLE = {"uu": ("C3", "-"), "dd": ("C0", "--"), "ud": ("C2", "-"), "du": ("C1", "--")}
+SPIN_ARROW = {"up": r"$\uparrow$", "dn": r"$\downarrow$"}
+
+
+def _spin_keys_to_show():
+    """SP: só as componentes que conservam spin; SOC: as quatro."""
+    return ("uu", "dd") if SYSTYPE == "SP" else SPIN_KEYS
+
+
+def _spin_columns(res, kinds, field):
+    """Colunas extras (e cabeçalho) com as componentes de spin de cada fita
+    (e, para T, os canais por spin das bandas)."""
+    cols, head = [], []
+    for kind in kinds:
+        for k in _spin_keys_to_show():
+            cols.append(res[kind][2][field][k])
+            head.append(f"{field}_{kind}_{k}")
+        if field == "T":
+            for name in ("up", "dn"):
+                cols.append(res[kind][2]["N"][name])
+                head.append(f"N_{kind}_{name}")
+    return cols, head
+
+
 def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
-           nproc=None, output="iv_ribbons.png", vmin=0.0):
+           nproc=None, output="iv_ribbons.png", vmin=0.0, spin=None, projection="sym"):
     """T(E) numa malha fina + curva I-V (bias de vmin a vmax, em V) para as fitas
     zigzag e armchair. Bias negativo é permitido (a corrente troca de sinal).
 
     Usa HOP_CUTOFF (defina antes de chamar) para baratear o cálculo.
     Salva a figura e os arquivos <output>_T.dat e <output>_IV.dat.
+    spin: resolve T e I por canal de spin (padrão: sim em SP/SOC com rótulos
+    up/dn); as componentes T_s's (s = spin injetado, s' = spin coletado) vão
+    para colunas extras e para uma segunda figura <output>_spin.png.
+    Cada componente usa degenerescência de spin 1: I_s's = (e/h) ∫ T_s's (f_L - f_R).
+    Retorna (energies, biases, res), res[fita] = (T, I, spin), com spin = None ou
+    dict(T=spin_conductance(...), I={componente: I(V)}, N=spin_channel_count(...)).
     """
     import time
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    spin = has_spin_labels() if spin is None else spin
     kT = 8.617333e-5 * temperature
     mu0 = 0.0 if SHIFT_TO_FERMI else EFERMI
     if vmax <= vmin:
@@ -660,20 +859,34 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     energies = mu0 + np.arange(-emax, emax + de / 2, de)
     biases = np.linspace(vmin, vmax, nv)
     res = {}
-    for kind, width in zip(("zigzag", "armchair"), widths):
+    kinds = ("zigzag", "armchair")
+    for kind, width in zip(kinds, widths):
         t0 = time.time()
         syst = make_two_terminal(kind, width, length).finalized()
-        T = conductance(syst, energies, nproc)
+        if spin:
+            Ts = spin_conductance(syst, energies, nproc, projection)
+            T = Ts["total"]
+        else:
+            T = conductance(syst, energies, nproc)
         I = landauer_current(energies, T, biases, kT)
-        res[kind] = (T, I)
+        sres = None
+        if spin:
+            sres = dict(T=Ts, I={k: landauer_current(energies, Ts[k], biases, kT, 1)
+                                 for k in SPIN_KEYS + ("mix",)},
+                        N=spin_channel_count(make_ribbon(kind, width), energies))
+            print(f"{kind}: max |T - soma das componentes de spin| = "
+                  f"{np.abs(Ts['mix']).max():.2e}")
+        res[kind] = (T, I, sres)
         print(f"{kind}: T(E) em {len(energies)} energias + I-V ({time.time() - t0:.0f} s)")
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.6))
-    for (kind, (T, I)), c, width in zip(res.items(), ("C0", "C3"), widths):
-        a1.plot(energies - mu0, T, color=c, lw=1, label=f"{kind}, W = {width:g} Å")
-        a2.plot(biases, I, "o-", color=c, ms=3, lw=1, label=f"{kind}, W = {width:g} Å")
+    for kind, c, width in zip(kinds, ("C0", "C3"), widths):
+        a1.plot(energies - mu0, res[kind][0], color=c, lw=1, label=f"{kind}, W = {width:g} Å")
+        a2.plot(biases, res[kind][1], "o-", color=c, ms=3, lw=1,
+                label=f"{kind}, W = {width:g} Å")
     a1.set_xlabel(r"$E - E_F$ (eV)")
-    a1.set_ylabel(r"$T(E)$ ($e^2/h$ per spin)")
+    a1.set_ylabel(r"$T(E)$ ($e^2/h$ per spin)" if SYSTYPE == "NP"
+                  else r"$T(E)$ ($e^2/h$, both spins)")
     a1.set_xlim(energies[0] - mu0, energies[-1] - mu0)
     a1.set_ylim(bottom=0)
     a1.axvline(0, color="k", ls=":", lw=0.6)
@@ -694,15 +907,64 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     fig.tight_layout()
     fig.savefig(output, dpi=150)
     base = os.path.splitext(output)[0]
+    plt.close(fig)
+
+    tcols, thead, icols, ihead = [], [], [], []
+    if spin:
+        tcols, thead = _spin_columns(res, kinds, "T")
+        icols, ihead = _spin_columns(res, kinds, "I")
+        fig, axs = plt.subplots(2, 2, figsize=(11, 8))
+        for row, (kind, width) in enumerate(zip(kinds, widths)):
+            at, ai = axs[row]
+            T, I, sres = res[kind]
+            for name, c in (("up", "C3"), ("dn", "C0")):
+                at.plot(energies - mu0, sres["N"][name], color=c, alpha=0.3, lw=2.5,
+                        drawstyle="steps-mid", label=f"channels {SPIN_ARROW[name]} (bands)")
+            at.plot(energies - mu0, T, color="0.6", lw=2.2, label="total")
+            ai.plot(biases, I, color="0.6", lw=2.2, label="total")
+            for k in _spin_keys_to_show():
+                col, ls = SPIN_STYLE[k]
+                at.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=1,
+                        label=SPIN_LABELS[k])
+                ai.plot(biases, sres["I"][k], color=col, ls=ls, lw=1,
+                        label=SPIN_LABELS[k])
+            at.set_title(f"{kind}, W = {width:g} Å: spin-resolved transmission", fontsize=10)
+            ai.set_title(f"{kind}: spin-resolved current, T = {temperature:g} K", fontsize=10)
+            at.set_xlabel(r"$E - E_F$ (eV)")
+            at.set_ylabel(r"$T_{\sigma'\sigma}$ ($e^2/h$)")
+            ai.set_xlabel("bias $V$ (V)")
+            ai.set_ylabel(r"$I_{\sigma'\sigma}$ ($\mu$A)")
+            at.axvline(0, color="k", ls=":", lw=0.6)
+            for a in (at, ai):
+                a.axhline(0, color="k", lw=0.4)
+                a.legend(fontsize=7, title=r"$\sigma\to\sigma'$ (lead 0 $\to$ 1)",
+                         title_fontsize=7)
+            if SYSTYPE == "SOC":     # spin-flip pequeno: eixo à direita com zoom
+                af = at.twinx()
+                for k in ("ud", "du"):
+                    col, ls = SPIN_STYLE[k]
+                    af.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=0.6,
+                            alpha=0.5)
+                af.set_ylabel("spin-flip (zoom)", fontsize=8, color="C2")
+        fig.tight_layout()
+        fig.savefig(base + "_spin.png", dpi=150)
+        plt.close(fig)
+
     np.savetxt(base + "_T.dat",
-               np.column_stack([energies - mu0, res["zigzag"][0], res["armchair"][0]]),
-               header=f"E-E_F(eV)  T_zigzag  T_armchair   hop_cutoff={HOP_CUTOFF} "
-                      f"W={widths} L={length}", fmt="%12.6f")
+               np.column_stack([energies - mu0, res["zigzag"][0], res["armchair"][0]]
+                               + tcols),
+               header="  ".join(["E-E_F(eV)  T_zigzag  T_armchair"] + thead)
+                      + f"   hop_cutoff={HOP_CUTOFF} W={widths} L={length}"
+                      + ("  [T_<fita>_<s'><s>: s = spin injetado (lead 0), "
+                         f"s' = spin coletado (lead 1); projeção {projection}]" if spin else ""),
+               fmt="%12.6f")
     np.savetxt(base + "_IV.dat",
-               np.column_stack([biases, res["zigzag"][1], res["armchair"][1]]),
-               header=f"V(V)  I_zigzag(uA)  I_armchair(uA)   T={temperature}K "
-                      f"spin_degeneracy={2 if SYSTYPE == 'NP' else 1}", fmt="%12.6f")
-    print(f"figura: {output}; dados: {base}_T.dat, {base}_IV.dat")
+               np.column_stack([biases, res["zigzag"][1], res["armchair"][1]] + icols),
+               header="  ".join(["V(V)  I_zigzag(uA)  I_armchair(uA)"] + ihead)
+                      + f"   T={temperature}K spin_degeneracy={2 if SYSTYPE == 'NP' else 1}",
+               fmt="%12.6f")
+    print(f"figura: {output}" + (f", {base}_spin.png" if spin else "")
+          + f"; dados: {base}_T.dat, {base}_IV.dat")
     return energies, biases, res
 
 
@@ -721,6 +983,7 @@ def main():
                "  python %(prog)s --iv                 # T(E) + curva I-V (0-3 V, cutoff 1e-3)\n"
                "  python %(prog)s --iv --vrange -1 2 --nv 31   # I-V de -1 a 2 V\n\n"
                "Saídas: figura (-o) e, com transporte, um .dat com E, T_zigzag, T_armchair.\n"
+               "SP/SOC: T e I também por canal de spin (colunas extras; --no-spin desliga).\n"
                "Transmissão em unidades de e^2/h, sem fator de spin; a região de\n"
                "espalhamento é a própria fita (perfeita): edite make_two_terminal() para\n"
                "adicionar defeitos, potenciais etc.",
@@ -750,6 +1013,11 @@ def main():
     ap.add_argument("--nv", type=int, default=61, help="número de pontos de bias [61]")
     ap.add_argument("--de", type=float, default=0.01, help="passo de energia de T(E) no I-V, eV [0.01]")
     ap.add_argument("--temperature", type=float, default=300.0, help="temperatura do I-V em K [300]")
+    ap.add_argument("--no-spin", action="store_true",
+                    help="SP/SOC: não resolve T e I por canal de spin (só o total)")
+    ap.add_argument("--spin-projection", choices=["sym", "block"], default="sym",
+                    help="SOC: projeção de spin de Gamma (sym: {P, Gamma}/2, soma = T exata; "
+                         "block: P Gamma P, componentes >= 0, soma != T) [sym]")
     ap.add_argument("-o", "--output", default=None,
                     help="figura de saída [bands_ribbons.png, ou iv_ribbons.png com --iv]")
     args = ap.parse_args()
@@ -759,6 +1027,9 @@ def main():
         HOP_CUTOFF = args.hop_cutoff
     if args.ovl_cutoff is not None:
         OVL_CUTOFF = args.ovl_cutoff
+    spin = has_spin_labels() and not args.no_spin
+    if SYSTYPE != "NP" and not has_spin_labels() and not args.no_spin:
+        print(f"[aviso] {SYSTYPE} sem rótulos up:/dn: nos orbitais: transporte só total")
     if args.iv:
         if args.hop_cutoff is None:
             HOP_CUTOFF = 1e-3
@@ -766,7 +1037,8 @@ def main():
             OVL_CUTOFF = 1e-4
         vmin, vmax = args.vrange if args.vrange else (0.0, args.vmax)
         run_iv((args.width_zz, args.width_ac), vmax, args.nv, args.de, args.length,
-               args.temperature, args.nproc, args.output or "iv_ribbons.png", vmin=vmin)
+               args.temperature, args.nproc, args.output or "iv_ribbons.png", vmin=vmin,
+               spin=spin, projection=args.spin_projection)
         return
     if args.output is None:
         args.output = "bands_ribbons.png"
@@ -788,7 +1060,7 @@ def main():
     ylab = r"$E - E_F$ (eV)" if SHIFT_TO_FERMI else "E (eV)"
     eref = 0.0 if SHIFT_TO_FERMI else EFERMI
     energies = np.linspace(args.emin, args.emax, args.ne) + (0 if SHIFT_TO_FERMI else EFERMI)
-    tdata = {}
+    tdata, sdata = {}, {}
 
     for col, (kind, width) in enumerate([("zigzag", args.width_zz),
                                          ("armchair", args.width_ac)]):
@@ -812,13 +1084,30 @@ def main():
         if transport:
             t0 = time.time()
             syst = make_two_terminal(kind, width, args.length).finalized()
-            T = conductance(syst, energies, args.nproc)
+            if spin:
+                sdata[kind] = spin_conductance(syst, energies, args.nproc, args.spin_projection)
+                T = sdata[kind]["total"]
+            else:
+                T = conductance(syst, energies, args.nproc)
             nch = channel_count(rib, energies)
             tdata[kind] = T
             axt = axd[f"t{col}"]
             axt.plot(nch, energies, "-", color="0.75", lw=2.5, drawstyle="steps-mid",
                      label="open channels (bands)")
-            axt.plot(T, energies, "b.-", lw=0.8, ms=3, label="Kwant")
+            axt.plot(T, energies, "k.-", lw=0.8, ms=3, label="Kwant")
+            if spin:
+                nsp = spin_channel_count(rib, energies)
+                sdata[kind]["n_up"], sdata[kind]["n_dn"] = nsp["up"], nsp["dn"]
+                for name, c in (("up", "C3"), ("dn", "C0")):
+                    axt.plot(nsp[name], energies, "-", color=c, alpha=0.3, lw=2.5,
+                             drawstyle="steps-mid",
+                             label=f"channels {SPIN_ARROW[name]} (bands)")
+                for k in _spin_keys_to_show():
+                    c, ls = SPIN_STYLE[k]
+                    axt.plot(sdata[kind][k], energies, color=c, ls=ls, lw=0.9,
+                             label=SPIN_LABELS[k])
+                print(f"{kind}: max |T - soma das componentes de spin| = "
+                      f"{np.abs(sdata[kind]['mix']).max():.2e}")
             axt.axhline(eref, color="r", ls="--", lw=0.6)
             axt.set_ylim(args.emin + eref, args.emax + eref)
             axt.set_xlim(left=0)
@@ -835,10 +1124,21 @@ def main():
     print(f"figura salva em {args.output}")
     if transport:
         dat = os.path.splitext(args.output)[0] + "_transmission.dat"
-        np.savetxt(dat, np.column_stack([energies, tdata["zigzag"], tdata["armchair"]]),
+        cols, head = [], []
+        for kind in sdata:
+            for k in _spin_keys_to_show():
+                cols.append(sdata[kind][k])
+                head.append(f"T_{kind}_{k}")
+            for name in ("up", "dn"):
+                cols.append(sdata[kind]["n_" + name])
+                head.append(f"N_{kind}_{name}")
+        np.savetxt(dat, np.column_stack([energies, tdata["zigzag"], tdata["armchair"]] + cols),
                    header=f"E{'-E_F' if SHIFT_TO_FERMI else ''}(eV)  T_zigzag(e^2/h)  "
-                          f"T_armchair(e^2/h)   W_zz={args.width_zz} W_ac={args.width_ac} "
-                          f"L={args.length} A", fmt="%12.6f")
+                          + "  ".join(["T_armchair(e^2/h)"] + head)
+                          + f"   W_zz={args.width_zz} W_ac={args.width_ac} L={args.length} A"
+                          + (f"  [T_<fita>_<s'><s>: s = spin injetado (lead 0), s' = spin "
+                             f"coletado (lead 1); projeção {args.spin_projection}]"
+                             if sdata else ""), fmt="%12.6f")
         print(f"transmissão salva em {dat}")
 
 

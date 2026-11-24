@@ -1,6 +1,6 @@
 # Validação wtb2kwant: MoS2 monocamada (NP, Wannier90/VASP)
 
-Gerado em 2026-11-23 11:21 por `tests/validate_mos2_np.py`.
+Gerado em 2026-11-24 16:51 por `tests/validate_mos2_np.py`.
 Dados: `tests/data/mos2_np` (`tb_hr.dat` + `wannier90.wout`). Referência: `wannier90_band.dat`.
 
 ## 1. Leitura e folding dos centros
@@ -48,7 +48,7 @@ Dados: `tests/data/mos2_np` (`tb_hr.dat` + `wannier90.wout`). Referência: `wann
 
 | tipo | período | sites/célula | supercélula p/ leads (N) | Kwant Bands(N·T) × ribbon_hk desdobrado |
 |---|---|---|---|---|
-| zigzag | (1, 0) = 3.1655 Å | {'Mo1': 7, 'S1': 8, 'S2': 8} | 9 | 3.2e-14 eV |
+| zigzag | (1, 0) = 3.1655 Å | {'Mo1': 7, 'S1': 8, 'S2': 8} | 9 | 2.6e-14 eV |
 | armchair | (1, 2) = 5.4829 Å | {'Mo1': 12, 'S1': 13, 'S2': 13} | 4 | 2.6e-14 eV |
 
 ![fitas](bands_ribbons.png)
@@ -59,15 +59,15 @@ Numa fita perfeita a transmissão deve ser inteira e igual ao número de bandas 
 
 | tipo | T(E−E_F = -0.5 eV) | T(E−E_F = +0.0 eV) | T(E−E_F = +0.2 eV) | T(E−E_F = +1.0 eV) | tempo |
 |---|---|---|---|---|---|
-| zigzag | 7.000 (bandas: 7) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 60 s |
-| armchair | 7.000 (bandas: 7) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 0.000 (bandas: 0) | 84 s |
+| zigzag | 7.000 (bandas: 7) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 61 s |
+| armchair | 7.000 (bandas: 7) | 1.000 (bandas: 1) | 1.000 (bandas: 1) | 0.000 (bandas: 0) | 86 s |
 
 ## 6. Curvas I-V (Landauer, banda rígida, hamiltoniano com cutoff 1e-3 eV)
 
 I(V) = 2 (e/h) ∫ T(E) [f(E − E_F − V/2) − f(E − E_F + V/2)] dE, T = 300 K, T(E) com passo de 0,01 eV, calculado a bias zero.
 
 - Verificação analítica (T = 1): I/V = 77.481 µA/V (esperado 2e²/h = 77.481 µA/V)
-- Tempo total: 160 s
+- Tempo total: 155 s
 
 | V (V) | 0.1 | 0.5 | 1 | 1.5 | 2 | 2.5 | 3 |
 |---|---|---|---|---|---|---|---|

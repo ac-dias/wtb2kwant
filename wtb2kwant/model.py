@@ -157,13 +157,17 @@ def _hermitize(hops: dict) -> dict:
 
 def from_wannier(wtb: WtbWannier, wouts: list, sites_mode: str = "atoms",
                  cutoff: float = 1e-4, max_dist_warn: float = 1.0,
-                 efermi: float | None = None) -> TBModel:
+                 efermi: float | None = None, soc_spin_order: str | None = None) -> TBModel:
     """Monta o modelo a partir do tb_hr.dat + .wout(s).
 
     wouts: um .wout para NP/SOC, dois (up, dn) para SP.
     sites_mode: "atoms" (orbitais agrupados no átomo mais próximo) ou
                 "centres" (cada WF é um site na posição do seu centro).
     cutoff: elementos |H| < cutoff (eV) são descartados.
+    soc_spin_order: SOC apenas; o hr.dat não diz o spin de cada WF. "blocks":
+        primeira metade up, segunda dn; "interleaved": up, dn alternados. A ordem depende do
+        código/versão que gerou as projeções: confira no .win/.wout. Com isso os orbitais ganham os
+        rótulos up:/dn: usados no transporte resolvido em spin.
     """
     nch = len(wtb.blocks)
     if len(wouts) != nch:
@@ -200,10 +204,24 @@ def from_wannier(wtb: WtbWannier, wouts: list, sites_mode: str = "atoms",
 
     # Associa cada WF (canal c, índice w) a um site e a um deslocamento n
     chlabel = ["up", "dn"] if nch == 2 else [""]
+    if soc_spin_order not in (None, "blocks", "interleaved"):
+        raise ValueError(f"soc_spin_order inválido: {soc_spin_order}")
+    if soc_spin_order and wtb.systype != "SOC":
+        raise ValueError("soc_spin_order só se aplica a sistemas SOC")
+    if soc_spin_order and wtb.blocks[0].num_wann % 2:
+        raise ValueError("SOC com num_wann ímpar: não dá para separar up/dn")
+
+    def soc_spin(w, nw):
+        if soc_spin_order == "blocks":
+            return "up" if w < nw // 2 else "dn"
+        return "up" if w % 2 == 0 else "dn"
+
     assign = []   # (c, w, chave_site, n(3,), posição_site)
     for c, wo in enumerate(wouts):
         for w, cen in enumerate(wo.centres):
             label = f"{chlabel[c]}:wf{w + 1}" if chlabel[c] else f"wf{w + 1}"
+            if soc_spin_order:
+                label = f"{soc_spin(w, len(wo.centres))}:wf{w + 1}"
             if sites_mode == "atoms":
                 best = None
                 for a in range(len(atoms)):

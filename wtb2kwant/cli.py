@@ -45,6 +45,10 @@ def main(argv=None):
                    help="wannier90.wout com os centros finais; spin-polarizado: up e dn")
     g.add_argument("--sites", choices=["atoms", "centres"], default="atoms",
                    help="agrupar WFs no átomo mais próximo (padrão) ou um site por WF")
+    g.add_argument("--soc-spin-order", choices=["blocks", "interleaved"], default=None,
+                   help="SOC: ordem de spin das WFs (blocks: todas up e depois todas dn; "
+                        "interleaved: up, dn alternados; confira a ordem das projeções no .win/.wout). "
+                        "Necessário para o transporte resolvido em spin")
     g = ap.add_argument_group("base não ortogonal (.ham)")
     g.add_argument("--basis", help="basis_set-*.basis (SIESTA, YAeHMOP)")
     g.add_argument("--structure",
@@ -78,7 +82,7 @@ def main(argv=None):
         wtb = read_wtb_wannier(args.input)
         wouts = [read_wout(f) for f in args.wout]
         model = from_wannier(wtb, wouts, sites_mode=args.sites, cutoff=args.cutoff,
-                             efermi=args.efermi)
+                             efermi=args.efermi, soc_spin_order=args.soc_spin_order)
         sources += [os.path.abspath(f) for f in args.wout]
     else:
         if not (args.basis or args.structure):

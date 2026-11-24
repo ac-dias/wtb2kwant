@@ -27,9 +27,10 @@
 \newcommand{\ket}[1]{\left|#1\right\rangle}
 \newcommand{\bra}[1]{\left\langle#1\right|}
 
-\title{\tool{} --- User Manual\\[4pt]
+\title{\includegraphics[width=0.32\linewidth]{figures/wtb2kwant_logo.png}\\[10pt]
+\tool{} --- User Manual\\[4pt]
 \large From \wtb{} tight-binding Hamiltonians to Kwant transport scripts}
-\author{Version 0.2.0}
+\author{Version 0.3.0}
 \date{\today}
 
 \begin{document}
@@ -84,7 +85,7 @@ $\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
         (Section~\ref{sec:validation}).
 \end{itemize}
 
-\paragraph{Status (v0.2.0).}
+\paragraph{Status (v0.3.0).}
 \begin{itemize}[nosep]
   \item Supported:
         \begin{itemize}[nosep]
@@ -92,9 +93,10 @@ $\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
           \item the non-orthogonal input from all \wtb{} localized-basis interfaces (SIESTA,
                 DFTB+, FHI-aims, CRYSTAL, YAeHMOP), with exact transport through
                 $H-E(S-\mathbb{1})$ or optional Löwdin orthogonalization;
-          \item 2D crystals, nanoribbons, two-terminal transmission and Landauer $I$--$V$.
+          \item 2D crystals, nanoribbons, two-terminal transmission and Landauer $I$--$V$;
+          \item NP, SP and SOC, with spin-resolved transmission and current for SP and SOC
+                (validated against FHI-aims and YAeHMOP, Section~\ref{sec:val-spin}).
         \end{itemize}
-  \item Implemented but not yet validated against reference data: SP and SOC.
   \item Planned: nanotubes and 3D crystals (Section~\ref{sec:roadmap}).
 \end{itemize}
 
@@ -318,6 +320,7 @@ band energies relative to the VBM are not affected.
 \begin{lstlisting}
 # Wannier90 (orthogonal)
 wtb2kwant tb_hr.dat --wout WOUT [WOUT] [--sites {atoms,centres}]
+          [--soc-spin-order {blocks,interleaved}]
           [--cutoff X] [--efermi X] [-o OUTPUT]
 # non-orthogonal (.ham)
 wtb2kwant FILE.ham (--basis BASIS | --structure FILE [--norb Sp=n,...])
@@ -336,6 +339,10 @@ Option & Default & Description \\
 \code{--sites} & \code{atoms} & \code{atoms}: group WFs on the nearest atom (one Kwant site
   per atom). \code{centres}: one site per WF, at its centre. Use \code{centres} for
   bond-centred WFs (e.g.\ $sp^3$ hybrids). \\
+\code{--soc-spin-order} & --- & Wannier90 SOC only: spin order of the WFs, \code{blocks}
+  (all up, then all down) or \code{interleaved} (up, down, up, \dots). The \code{tb\_hr.dat}
+  does not say which WF carries which spin; check the projections in the \code{.win}/\code{.wout}.
+  Needed for spin-resolved transport (Section~\ref{sec:spin}). \\
 \code{--basis F} & --- & \code{basis\_set-*.basis} (SIESTA, YAeHMOP). \\
 \code{--structure F} & --- & Crystal structure (POSCAR, \code{geometry.in}, \code{.gen},
   CRYSTAL \code{.out}, ASE formats); \code{--structure-format} forces the format. \\
@@ -563,11 +570,19 @@ Function & Description \\
 \code{make\_two\_terminal(kind, width, length)} & Scattering region and two ribbon leads. \\
 \code{conductance(syst, energies, nproc)} & $T_{0\to1}(E)$ in $e^2/h$ (no spin factor),
   parallelized over energies. \\
+\code{spin\_conductance(syst, energies, nproc, projection)} & SP/SOC: dict with the total
+  $T$ and the spin components \code{uu}, \code{ud}, \code{du}, \code{dd} and \code{mix}
+  (Section~\ref{sec:spin}). \\
+\code{spin\_transmission(fsyst, E)} & The same at one energy, from the NEGF formula. \\
+\code{orbital\_spins()}, \code{has\_spin\_labels()} & Spin ($\pm1$) of each orbital from
+  the \code{up:}/\code{dn:} labels; whether spin-resolved transport is available. \\
 \code{channel\_count(rib, energies)} & Number of right-moving bands: the expected $T$ of a
   perfect ribbon. \\
 \code{ribbon\_info}, \code{plot\_ribbon\_top} & Sites per cell; top view of the ribbon. \\
 \code{landauer\_current(E, T, V, kT)} & Landauer current $I(V)$ in $\mu$A from a tabulated $T(E)$. \\
-\code{run\_iv(widths, vmax, ...)} & Fine $T(E)$ and $I$--$V$ curves of both ribbons, with figure and data files. \\
+\code{run\_iv(widths, vmax, ...)} & Fine $T(E)$ and $I$--$V$ curves of both ribbons, with figure and data files
+  (spin-resolved for SP/SOC). Returns \code{(energies, biases, res)}, with
+  \code{res[kind] = (T, I, spin)}. \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -579,6 +594,8 @@ python kwant_model.py [--width-zz W] [--width-ac W] [--emin E] [--emax E]
                       [--nproc P] [--hop-cutoff X] [-o FIGURE]
 python kwant_model.py --iv [--vrange VMIN VMAX] [--nv NV] [--de DE] [--temperature K]
                       [--hop-cutoff X] [--length L] [--nproc P] [-o FIGURE]
+# SP/SOC only
+                      [--no-spin] [--spin-projection {sym,block}]
 \end{lstlisting}
 Widths and lengths are in \AA{} (default 20 and 30). The energy window defaults to
 $[-3, 3]$\,eV around $E_F$, sampled with \code{--ne} 61 energies for $T(E)$. The output
@@ -595,6 +612,53 @@ energy window of $T(E)$ automatically covers
 $E_F \pm [\max(|V_\text{min}|,|V_\text{max}|)/2 + 10k_BT]$. The number of bias points is
 set with \code{--nv} (default 61). If \code{--hop-cutoff} is not given, it uses $10^{-3}$\,eV. The
 outputs are \code{iv\_ribbons.png}, \code{iv\_ribbons\_T.dat} and \code{iv\_ribbons\_IV.dat}.
+
+For SP and SOC models whose orbitals carry \code{up:}/\code{dn:} labels, both modes also
+resolve the transmission (and, with \code{--iv}, the current) by spin channel
+(Section~\ref{sec:spin}). The components are drawn in the transmission panels and appended
+as extra columns to the \code{.dat} files (\code{T\_<ribbon>\_<s'><s>}, \code{I\_<ribbon>\_<s'><s>}).
+With \code{--iv}, a second figure \code{iv\_ribbons\_spin.png} shows $T_{\sigma'\sigma}(E)$ and
+$I_{\sigma'\sigma}(V)$ for each ribbon. \code{--no-spin} turns this off.
+
+\subsection{Spin-resolved transport}\label{sec:spin}
+SP and SOC Hamiltonians carry the spin explicitly: each Kwant site holds the up and down
+spin-orbitals of an atom, and the orbital labels in \code{SITES} start with \code{up:} or
+\code{dn:}. The labels come from the \code{.basis} file, from the spin blocks of the
+\code{.ham} or SP \code{tb\_hr.dat}, or, for Wannier90 SOC, from \code{--soc-spin-order}.
+\code{spin\_conductance} computes
+\begin{equation}
+  T_{\sigma'\sigma}(E) = \operatorname{Tr}\!\left[\Gamma_1^{\sigma'}\, G_{10}\,
+  \Gamma_0^{\sigma}\, G_{10}^\dagger\right],
+\end{equation}
+where $\sigma$ is the spin injected from lead 0, $\sigma'$ the spin collected in lead 1,
+$G_{10}$ the retarded Green's function between the two lead interfaces
+(\code{kwant.greens\_function}) and $\Gamma_i = i(\Sigma_i-\Sigma_i^\dagger)$. The keys are
+\code{uu}, \code{ud} (down in, up out), \code{du} and \code{dd}. Two spin projections of
+$\Gamma$ are available:
+\begin{itemize}[nosep]
+  \item \code{sym} (default): $\Gamma^\sigma = \tfrac12\{P_\sigma,\Gamma\}$, the analogue of the
+        symmetrized spin current $\tfrac12\{S_z, J\}$. The components add up to $T$ exactly,
+        but with strong spin mixing the spin-flip terms can be slightly negative.
+  \item \code{block}: $\Gamma^\sigma = P_\sigma\Gamma P_\sigma$. The components are never
+        negative, but the up-down blocks of $\Gamma$ are left out, so with SOC
+        $T-\sum T_{\sigma'\sigma}$ (key \code{mix}) is not zero. Near band crossings where the
+        SOC mixes the spins strongly, the sum can exceed $2T$ (Section~\ref{sec:val-spin}),
+        which is why \code{sym} is the default.
+\end{itemize}
+With SOC the lead modes themselves mix the two spins, so no split of $T$ into spin
+channels is unique. When the leads conserve $S_z$ (SP, or SOC without $S_x$, $S_y$ terms)
+the two choices coincide and are exact. In
+the SP case, the spin-flip terms vanish, $T_\uparrow = $ \code{uu} and
+$T_\downarrow = $ \code{dd}. The non-orthogonal basis needs no special care, because $S$ is
+diagonal in spin. The Landauer currents of the components use a spin degeneracy of 1,
+$I_{\sigma'\sigma} = (e/h)\int T_{\sigma'\sigma}(f_L-f_R)\,dE$, so the four components add
+up to the total current (exactly with \code{sym}). The cost is the same as \code{conductance}.
+\begin{lstlisting}[language=Python]
+from kwant_model import make_two_terminal, spin_conductance
+syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()
+Ts = spin_conductance(syst, [-0.5, 0.0, 0.5])
+Ts["uu"], Ts["dd"], Ts["ud"] + Ts["du"], Ts["mix"]
+\end{lstlisting}
 
 \subsection{Ribbon geometry}
 The ribbon is the strip $0 \le (\mathbf{r}-\mathbf{r}_0)\cdot\hat{\mathbf{n}} < W$, where
@@ -851,11 +915,104 @@ edges.}
 \label{fig:yae-lowdin}
 \end{figure}
 
+\subsection{Spin-polarized and spin-orbit models}\label{sec:val-spin}
+\code{tests/validate\_spin.py} (about 20\,min on 12 cores) writes
+\code{tests/results/spin/REPORT.md}. The MoS$_2$ data ship with the repository; the FHI-aims
+and CRYSTAL data are large and are read from \code{\$WTB2KWANT\_INTERFACES\_TEST} (the
+sections are skipped if they are missing).
+
+\paragraph{Bands.}
+\begin{itemize}[nosep]
+  \item \textbf{Graphene SP, FHI-aims} (56 spin-orbitals, tier basis): the bands of each spin
+        block agree with the FHI-aims \code{band1xxx.out} (up) and \code{band2xxx.out} (down)
+        at the 81 mesh points to $8\times10^{-6}$\,eV in $E-E_F\in[-20,10]$\,eV, limited by
+        the 5 decimals of the FHI-aims output (Figure~\ref{fig:graphene-sp}). Up and down are
+        identical, and the Dirac point sits at $E_F$.
+  \item \textbf{MoS$_2$ SOC, YAeHMOP} (34 spin-orbitals, up-down coupling up to 0.10\,eV):
+        $7\times10^{-6}$\,eV in VBM$-6$\dots VBM$+4$\,eV; the gap (2.268108\,eV) and the SOC
+        splitting of the top valence band at K (165.011\,meV) are reproduced
+        (Figure~\ref{fig:mos2-soc}). The data set in \code{tests/data/mos2\_yaehmop\_soc} is a
+        sparse copy (entries with $|H|>10^{-8}$\,eV or $|S|>10^{-9}$), which changes the bands
+        by less than $10^{-7}$\,eV in that window.
+  \item \textbf{h-BN SP, CRYSTAL:} \tool{} reproduces a direct Fourier sum of the \code{.ham}
+        to $3\times10^{-12}$\,eV, but the file itself is defective: $H(\mathbf R)\neq
+        H(-\mathbf R)^\dagger$ by up to 37\,eV, one $\mathbf R$ has no $-\mathbf R$ partner, and
+        the bands are metallic, whereas h-BN is an insulator. The problem lies in the CRYSTAL
+        interface of \wtb{}; this data set cannot serve as a reference until it is fixed.
+\end{itemize}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/graphene_sp_bands_vs_aims.png}
+\caption{Graphene SP from FHI-aims. Left: bands of the converted model. Right: deviation
+from the FHI-aims eigenvalues at the 81 mesh points, both spins.}
+\label{fig:graphene-sp}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{figures/mos2_soc_bands_vs_yaehmop.png}
+\caption{MoS$_2$ with SOC: bulk bands of \tool{} (circles) and YAeHMOP (lines).}
+\label{fig:mos2-soc}
+\end{figure}
+
+\paragraph{Spin-resolved transport.} All ribbons are perfect, so each spin channel can be
+compared with the band structure (\code{spin\_channel\_count}).
+\begin{itemize}[nosep]
+  \item \textbf{Synthetic ferromagnet} (exact test): the YAeHMOP MoS$_2$ NP model doubled
+        with an exchange splitting, $H_{\uparrow,\downarrow} = H \mp \Delta S$ with
+        $\Delta=0.3$\,eV. Then $T_{\uparrow\uparrow}(E)=T_\text{NP}(E+\Delta)$ and
+        $T_{\downarrow\downarrow}(E)=T_\text{NP}(E-\Delta)$: both hold to $10^{-11}$ on 81
+        energies, the spin-flip terms are $10^{-24}$, and $T_{\uparrow\uparrow}$,
+        $T_{\downarrow\downarrow}$ equal the spin channel counts to $10^{-11}$
+        (Figure~\ref{fig:sp-magnetic}).
+  \item \textbf{Graphene SP:} $T_{\uparrow\uparrow}=T_{\downarrow\downarrow}=T/2$ equals half
+        the channel count to $6\times10^{-12}$.
+  \item \textbf{MoS$_2$ SOC} (12\,\AA{} ribbons): $T$ equals the channel count to $10^{-11}$,
+        and with \code{sym} the four components add up to $T$ to $10^{-13}$. Near $E_F$ and in
+        the conduction band the spin is almost conserved (median spin flip $\sim 3\times
+        10^{-3}\,T$). At a few valence-band energies, band crossings where the SOC mixes even
+        and odd orbitals, the spin flip reaches about $0.1\,T$. There, \code{block} components
+        add up to as much as $2.2\,T$, which is why \code{sym} is the default. The
+        spin-weighted channel counts $N_\sigma$ match the transmission collected in each spin
+        to $10^{-4}$ (armchair) and $6\times10^{-3}$ (zigzag) in the median; at the mixing
+        energies they differ by up to 0.36, because $N_\sigma$ is the spin of the lead modes
+        and $T_{\sigma'\sigma}$ the spin projected on the interface orbitals
+        (Figure~\ref{fig:mos2-soc-T}).
+  \item \textbf{$I$--$V$:} \code{run\_iv} resolves the current by spin; with \code{sym} the
+        four components add up to the total current exactly (Figure~\ref{fig:mos2-soc-iv}).
+\end{itemize}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.62\linewidth]{figures/sp_magnetic_spin_transmission.png}
+\caption{Synthetic ferromagnet: spin-resolved transmission compared with the shifted NP
+transmission and with the spin channel counts of the ribbon bands.}
+\label{fig:sp-magnetic}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/mos2_soc_spin_transmission.png}
+\caption{MoS$_2$ with SOC, 12\,\AA{} ribbons: spin components of $T$ (\code{sym}) and spin
+channel counts. Right axis: spin-flip components.}
+\label{fig:mos2-soc-T}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/mos2_soc_iv_spin.png}
+\caption{Output \code{iv\_ribbons\_spin.png} of \code{run\_iv} for MoS$_2$ with SOC:
+spin-resolved transmission with spin channel counts (left) and current (right).}
+\label{fig:mos2-soc-iv}
+\end{figure}
+
 \subsection{Running the tests}
 \begin{lstlisting}[language=bash]
-python -m pytest -q                         # fast regression tests (~20 s)
+python -m pytest -q                         # fast regression tests (~2 min)
 python tests/validate_mos2_np.py            # Wannier90 MoS2, full report (~13 min)
 python tests/validate_mos2_yaehmop_np.py    # non-orthogonal MoS2 (~3 min)
+python tests/validate_spin.py               # SP and SOC (~20 min)
 \end{lstlisting}
 \code{validate\_mos2\_yaehmop\_np.py} (non-orthogonal, about 3\,min) uses
 \code{tests/data/mos2\_yaehmop\_np} (override with \code{WTB2KWANT\_MOS2\_YAEHMOP\_DIR}).
@@ -874,27 +1031,25 @@ run takes about 13\,min on 12 cores.
         electrostatic potential (for example a linear drop or a self-consistent
         Poisson solution) as on-site terms that depend on Kwant \code{params}.
   \item \textbf{Non-orthogonal bases:} adapt \code{kwant.operator} densities and
-        currents to the metric $S$; validate SOC and the remaining interfaces (SIESTA,
-        DFTB+) with reference band structures.
+        currents to the metric $S$; validate the remaining interfaces (SIESTA, DFTB+) with
+        reference band structures.
   \item \textbf{Pending tests:}
         \begin{itemize}[nosep]
-          \item validate SP and SOC against reference bands. Data already exist for
-                YAeHMOP MoS$_2$ SOC, CRYSTAL h-BN SP and FHI-aims graphene SP; a
-                Wannier90 SP data set with two \code{.wout} files is still needed;
+          \item a Wannier90 SP data set (two \code{.wout} files) and a Wannier90 SOC data set,
+                to test the \code{--soc-spin-order} labels on real data;
+          \item a magnetic SP system with reference data (so far only the synthetic exchange
+                model, Section~\ref{sec:val-spin});
+          \item a correct CRYSTAL SP \code{.ham}: the current h-BN file is not Hermitian;
           \item validate the SIESTA and DFTB+ inputs on 2D systems. The available SIESTA
                 example (Sn$_3$O$_4$) is 3D, and the DFTB+ example has no geometry;
-          \item add reduced FHI-aims and CRYSTAL data sets, with reference bands, to the
-                automated tests. So far they were checked by hand: the graphene Dirac point
-                at $E_F$ and the h-BN spin degeneracy;
-          \item rerun \code{tests/validate\_mos2\_np.py} with v0.2. The stored report was
-                generated with v0.1.
+          \item add reduced FHI-aims and CRYSTAL data sets to the automated tests (today they
+                are read from outside the repository by \code{validate\_spin.py}).
         \end{itemize}
   \item \textbf{Nanotubes:} roll the 2D sheet along a chiral vector $\mathbf{C}_h=(n,m)$
         with periodic boundary conditions, neglecting curvature corrections to the
         hoppings.
   \item \textbf{3D crystals and slabs:} at present only systems with two periodic
         directions are supported.
-  \item \textbf{SP and SOC:} implemented but not yet validated with reference data.
   \item \textbf{Scissors operator:} not applied.
 \end{itemize}
 
@@ -911,6 +1066,8 @@ wtb2kwant/
   tests/                  pytest tests, validation script and results
   tests/data/mos2_np/     MoS2 test data (Wannier90/VASP)
   tests/data/mos2_yaehmop_np/  MoS2 test data (YAeHMOP, non-orthogonal)
+  tests/data/mos2_yaehmop_soc/ MoS2 with SOC (YAeHMOP, sparse copy)
+  docs/                   logo (PNG, SVG)
   wtb2kwant/lowdin.py     Lowdin orthogonalization (experimental)
   bin/                    launchers written by install.sh (not versioned)
   manual/                 this manual (LaTeX)

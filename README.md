@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/wtb2kwant_logo.png" alt="wtb2kwant logo" width="260">
+</p>
+
 # wtb2kwant
 
 **wtb2kwant** converts tight-binding Hamiltonians in the
@@ -145,6 +149,37 @@ Spin-polarized calculations:
 wtb2kwant tb_hr.dat --wout wannier90.up.wout wannier90.dn.wout -o kwant_model.py
 ```
 
+### Spin-resolved transport (SP and SOC)
+
+For SP and SOC models the generated script also resolves the transmission and the current
+by spin channel. The bands/transmission example and `--iv` draw the components and add them
+as extra columns to the `.dat` files; `--iv` also writes `iv_ribbons_spin.png`. Turn this
+off with `--no-spin`.
+
+```python
+from kwant_model import make_two_terminal, spin_conductance
+
+syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()
+Ts = spin_conductance(syst, [-0.5, 0.0, 0.5])
+# Ts["uu"], Ts["ud"], Ts["du"], Ts["dd"]: T[s', s], s = spin injected from lead 0,
+# s' = spin collected in lead 1 ("ud" = down in, up out); Ts["total"]; Ts["mix"]
+```
+
+The components come from the NEGF formula T_s's = Tr[Γ₁^s' G Γ₀^s G†] with spin-projected
+lead broadenings:
+
+- **SP:** spin is conserved, so the result is exact: T↑ = `uu`, T↓ = `dd`, no spin flip.
+- **SOC:** the lead modes already mix the two spins, so the split is not unique, and
+  two projections are offered:
+  - `--spin-projection sym` (default, {P, Γ}/2, the analogue of the symmetrized spin
+    current): the components always add up to T, but the spin-flip terms can come out
+    slightly negative.
+  - `block` (P Γ P): the components are never negative, but they do not add up to T. The
+    difference is reported as `mix`, and near band crossings with strong spin mixing it
+    can be larger than T.
+- **Wannier90 SOC:** the `tb_hr.dat` does not say which Wannier function carries which
+  spin, so pass `--soc-spin-order blocks|interleaved` to the converter.
+
 ### Non-orthogonal Hamiltonians
 
 The format is detected automatically. Kwant needs to know on which atom each orbital
@@ -170,6 +205,7 @@ level with `--efermi`.
 | `input` | – | WanTiBEXOS Hamiltonian file (`tb_hr.dat` or `.ham`) |
 | `--wout F [F]` | required | `wannier90.wout` (two files, up then down, for SP) |
 | `--sites {atoms,centres}` | `atoms` | group Wannier functions by nearest atom, or one site per WF |
+| `--soc-spin-order {blocks,interleaved}` | – | Wannier90 SOC: spin order of the WFs (needed for spin-resolved transport) |
 | `--basis F` | – | `basis_set-*.basis` (non-orthogonal: SIESTA, YAeHMOP) |
 | `--structure F` | – | crystal structure (non-orthogonal: DFTB+, FHI-aims, CRYSTAL, ...) |
 | `--norb Sp=n,...` | – | orbitals per spin of each species (with `--structure`) |
@@ -209,10 +245,28 @@ about 3 min and writes `tests/results/mos2_yaehmop_np/REPORT.md`:
     compensate this.
   - For strongly non-orthogonal bases, keep S (the default).
 
+`tests/validate_spin.py` validates the **SP and SOC** paths and the spin-resolved transport
+(about 20 min; `tests/results/spin/REPORT.md`):
+
+- **Graphene SP (FHI-aims):** the bands of each spin agree with the FHI-aims eigenvalues to
+  8×10⁻⁶ eV, which is the precision of the FHI-aims output.
+- **MoS₂ SOC (YAeHMOP):** 7×10⁻⁶ eV in VBM−6…+4 eV. The gap and the 165.011 meV SOC splitting
+  at K are reproduced.
+- **h-BN SP (CRYSTAL):** wtb2kwant reproduces the `.ham` (10⁻¹² eV), but the file itself is
+  defective: it is not Hermitian and gives metallic bands. This is an issue of the CRYSTAL
+  interface.
+- **Synthetic ferromagnet** (MoS₂ with exchange H ∓ ΔS, exact test):
+  T↑↑(E) = T_NP(E+Δ) and T↓↓(E) = T_NP(E−Δ) to 10⁻¹¹, the spin flip is 10⁻²⁴, and each
+  spin component equals the spin channel count of the bands.
+- **MoS₂ SOC ribbons:** T equals the channel count and the `sym` components add up to T
+  exactly. The spin flip is ~10⁻³ T near E_F, but reaches ~0.1 T at a few valence-band
+  crossings, where `block` components add up to as much as 2.2 T.
+
 ```bash
-python -m pytest -q                        # quick regression tests (~20 s)
+python -m pytest -q                        # quick regression tests (~2 min)
 python tests/validate_mos2_np.py           # Wannier90 report (~13 min on 12 cores; --quick ~5 min)
 python tests/validate_mos2_yaehmop_np.py   # non-orthogonal report (~3 min)
+python tests/validate_spin.py              # SP/SOC report (~20 min)
 ```
 
 ## Documentation
@@ -224,25 +278,22 @@ API of the generated script, and the validation.
 ## Current limitations and roadmap
 
 - Supported: Wannier90-type and non-orthogonal WanTiBEXOS input; 2D crystals (ribbons).
-- SP and SOC are implemented, but have not yet been validated against reference data.
+- Spin-resolved transport with SOC is not unique, because the lead modes mix the spins;
+  see the `--spin-projection` options above.
 - The scissors operator is recorded in the generated script but not applied.
 - Non-orthogonal bases: Kwant operators (local DOS, currents) are not yet adapted to S.
 - Planned: nanotubes; 3D bulk crystals and slabs.
 
 ### Pending tests
 
-- **SP and SOC:** validate against reference band structures.
-  - Wannier90 SP with two `.wout` files: no data set yet.
-  - SOC: the YAeHMOP MoS₂ SOC data already exist.
-  - SP: the CRYSTAL h-BN and FHI-aims graphene data already exist.
+- **Wannier90 SP and SOC:** no data sets yet (two `.wout` files for SP; SOC to test
+  `--soc-spin-order` on real data).
+- **Magnetic SP with reference data:** so far only the synthetic exchange model.
+- **CRYSTAL SP:** a correct `.ham` is needed; the current h-BN file is not Hermitian.
 - **SIESTA and DFTB+ inputs:** validate with 2D test cases. The available SIESTA example
   (Sn₃O₄) is 3D, and the DFTB+ example has no geometry file.
-- **FHI-aims and CRYSTAL:** reading and positions were checked by hand (graphene Dirac
-  point, h-BN spin degeneracy). Add reduced versions of these data sets to the automated
-  tests, together with reference bands.
-- **Wannier90 validation report:** rerun `tests/validate_mos2_np.py` with v0.2.
-  `tests/results/mos2_np/` was generated with v0.1; the code paths are unchanged, and the
-  pytest suite already covers v0.2.
+- **FHI-aims and CRYSTAL in pytest:** add reduced data sets to the automated tests (today
+  `validate_spin.py` reads them from outside the repository).
 
 ## License
 
