@@ -286,14 +286,38 @@ API of the generated script, and the validation.
 
 ### Pending tests
 
-- **Wannier90 SP and SOC:** no data sets yet (two `.wout` files for SP; SOC to test
-  `--soc-spin-order` on real data).
-- **Magnetic SP with reference data:** so far only the synthetic exchange model.
+**Inputs and band structures**
+
+- **Wannier90 SP:** no data set yet (two `.wout` files, up and down).
+- **Wannier90 SOC:** no data set yet, needed to test `--soc-spin-order` on real data.
 - **CRYSTAL SP:** a correct `.ham` is needed; the current h-BN file is not Hermitian.
 - **SIESTA and DFTB+ inputs:** validate with 2D test cases. The available SIESTA example
   (Sn₃O₄) is 3D, and the DFTB+ example has no geometry file.
 - **FHI-aims and CRYSTAL in pytest:** add reduced data sets to the automated tests (today
   `validate_spin.py` reads them from outside the repository).
+
+**Transport separated by spin channel**
+
+Already validated: an exact synthetic ferromagnet (T↑↑, T↓↓ = shifted NP transmission and
+spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2) and MoS₂ SOC ribbons (sum rule with
+`sym`). Still pending:
+
+- **Real magnetic SP system:** a ferromagnetic or half-metallic 2D crystal with reference
+  data; so far only the synthetic exchange model is tested.
+- **Independent check of the SP channels:** compare T↑ and T↓ with Kwant's own
+  `conservation_law` route (`smatrix(...).transmission((1, s), (0, s))`).
+- **SOC components against another NEGF code:** compare T↑↑, T↓↓ and the spin-flip terms
+  T↑↓, T↓↑ with an independent spin-resolved calculation (e.g. TBtrans) on the same
+  Hamiltonian.
+- **Sensitivity of the SOC split:** with SOC the split into spin channels is not unique.
+  Check how the components depend on the position of the lead interface (lead supercell,
+  scattering-region length) and how `sym`, `block` and the spin-weighted channel counts
+  compare.
+- **Physical spin flip:** systems where the spin flip comes from scattering rather than
+  from the lead modes, such as SOC ribbons with defects or disorder, or a Rashba term
+  from an out-of-plane field.
+- **Spin-resolved currents beyond the rigid band:** the spin I-V uses T(E) at zero bias;
+  test it with a bias-dependent potential once that is implemented.
 
 ## License
 

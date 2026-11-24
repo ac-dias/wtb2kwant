@@ -1033,17 +1033,38 @@ run takes about 13\,min on 12 cores.
   \item \textbf{Non-orthogonal bases:} adapt \code{kwant.operator} densities and
         currents to the metric $S$; validate the remaining interfaces (SIESTA, DFTB+) with
         reference band structures.
-  \item \textbf{Pending tests:}
+  \item \textbf{Pending tests: inputs and band structures.}
         \begin{itemize}[nosep]
-          \item a Wannier90 SP data set (two \code{.wout} files) and a Wannier90 SOC data set,
-                to test the \code{--soc-spin-order} labels on real data;
-          \item a magnetic SP system with reference data (so far only the synthetic exchange
-                model, Section~\ref{sec:val-spin});
-          \item a correct CRYSTAL SP \code{.ham}: the current h-BN file is not Hermitian;
-          \item validate the SIESTA and DFTB+ inputs on 2D systems. The available SIESTA
-                example (Sn$_3$O$_4$) is 3D, and the DFTB+ example has no geometry;
-          \item add reduced FHI-aims and CRYSTAL data sets to the automated tests (today they
-                are read from outside the repository by \code{validate\_spin.py}).
+          \item Wannier90 SP: no data set yet (two \code{.wout} files, up and down);
+          \item Wannier90 SOC: no data set yet, needed to test \code{--soc-spin-order} on
+                real data;
+          \item CRYSTAL SP: a correct \code{.ham} is needed; the current h-BN file is not
+                Hermitian (Section~\ref{sec:val-spin});
+          \item SIESTA and DFTB+ inputs on 2D systems. The available SIESTA example
+                (Sn$_3$O$_4$) is 3D, and the DFTB+ example has no geometry;
+          \item reduced FHI-aims and CRYSTAL data sets in the automated tests (today
+                \code{validate\_spin.py} reads them from outside the repository).
+        \end{itemize}
+  \item \textbf{Pending tests: transport separated by spin channel.} Already validated: an
+        exact synthetic ferromagnet, graphene SP and MoS$_2$ SOC ribbons
+        (Section~\ref{sec:val-spin}). Still pending:
+        \begin{itemize}[nosep]
+          \item a real magnetic SP system (ferromagnetic or half-metallic 2D crystal) with
+                reference data;
+          \item an independent check of the SP channels with Kwant's own
+                \code{conservation\_law} route,
+                \code{smatrix(...).transmission((1, s), (0, s))};
+          \item the SOC components $T_{\uparrow\uparrow}$, $T_{\downarrow\downarrow}$,
+                $T_{\uparrow\downarrow}$, $T_{\downarrow\uparrow}$ against an independent
+                spin-resolved NEGF code (e.g.\ TBtrans) on the same Hamiltonian;
+          \item the sensitivity of the SOC split to the position of the lead interface
+                (lead supercell, scattering-region length), and how \code{sym},
+                \code{block} and the spin-weighted channel counts compare;
+          \item physical spin flip from scattering rather than from the lead modes: SOC
+                ribbons with defects or disorder, or a Rashba term from an out-of-plane
+                field;
+          \item spin-resolved currents beyond the rigid band, once a bias-dependent
+                potential is implemented.
         \end{itemize}
   \item \textbf{Nanotubes:} roll the 2D sheet along a chiral vector $\mathbf{C}_h=(n,m)$
         with periodic boundary conditions, neglecting curvature corrections to the
