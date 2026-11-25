@@ -3,6 +3,7 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
+\usepackage{microtype}
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
@@ -21,7 +22,10 @@
   keepspaces=true, showstringspaces=false,
   literate={Å}{{\AA}}1 {≥}{{$\geq$}}1 {–}{{--}}1
 }
-\newcommand{\code}[1]{\texttt{#1}}
+% \code: monospace that may break after an underscore or a slash (long function and file names would
+% otherwise run into the margin; no hyphen is added)
+\setlength{\emergencystretch}{2.5em}
+\newcommand{\code}[1]{{\ttfamily\def\_{\textunderscore\allowbreak}\def\slash{/\allowbreak}#1}}
 \newcommand{\wtb}{WanTiBEXOS}
 \newcommand{\tool}{\texttt{wtb2kwant}}
 \newcommand{\ket}[1]{\left|#1\right\rangle}
@@ -92,7 +96,7 @@ $\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
           \item the Wannier90-type input;
           \item the non-orthogonal input from all \wtb{} localized-basis interfaces (SIESTA,
                 DFTB+, FHI-aims, CRYSTAL, YAeHMOP), with exact transport through
-                $H-E(S-\mathbb{1})$ or optional Löwdin orthogonalization;
+                $H-E(S-\mathbb{1})$;
           \item 2D crystals, nanoribbons, two-terminal transmission and Landauer $I$--$V$;
           \item NP, SP and SOC, with spin-resolved transmission and current for SP and SOC
                 (validated against FHI-aims and YAeHMOP, Section~\ref{sec:val-spin}).
@@ -324,8 +328,7 @@ wtb2kwant tb_hr.dat --wout WOUT [WOUT] [--sites {atoms,centres}]
           [--cutoff X] [--efermi X] [-o OUTPUT]
 # non-orthogonal (.ham)
 wtb2kwant FILE.ham (--basis BASIS | --structure FILE [--norb Sp=n,...])
-          [--s-cutoff X] [--orthogonalize {none,lowdin}] [--lowdin-mesh N]
-          [--cutoff X] [--efermi X] [-o OUTPUT]
+          [--s-cutoff X] [--cutoff X] [--efermi X] [-o OUTPUT]
 \end{lstlisting}
 The format is detected from the header: line 9 of a \code{.ham} is the \code{\#rcell}
 comment. You can force it with \code{--format \{wannier,nonortho\}}.
@@ -348,10 +351,6 @@ Option & Default & Description \\
   CRYSTAL \code{.out}, ASE formats); \code{--structure-format} forces the format. \\
 \code{--norb} & --- & Orbitals per spin of each species, e.g.\ \code{Mo=9,S=4}. \\
 \code{--s-cutoff X} & $10^{-6}$ & Drop overlap elements with $|S|<X$. \\
-\code{--orthogonalize} & \code{none} & \code{none}: keep $S$ (exact transport,
-  Section~\ref{sec:nonortho}). \code{lowdin}: symmetric orthogonalization in the bulk
-  (Section~\ref{sec:lowdin}). \\
-\code{--lowdin-mesh N} & auto & $k$ mesh ($N\times N$) for Löwdin. \\
 \code{--cutoff X} & $10^{-5}$ & Drop matrix elements with $|H|<X$ (eV). \\
 \code{--efermi X} & from file & Override the Fermi energy (eV). \\
 \code{-o FILE} & \code{kwant\_model.py} & Name of the generated script. \\
@@ -480,55 +479,6 @@ The overlap has its own cutoff (\code{--s-cutoff}, and \code{OVL\_CUTOFF} or
 \code{--ovl-cutoff} in the script). Errors in $S$ enter the eigenvalues as $E\,\delta S$,
 so high-lying bands are more sensitive. After the cutoff, \tool{} checks that $S(k)$ is
 positive definite on a $24\times24$ mesh and reports the smallest eigenvalue.
-
-\subsection{Löwdin orbitals}\label{sec:lowdin}
-The alternative to keeping $S$ is to change the basis into an orthonormal one. Among all
-orthonormal sets built from the original orbitals $\{\phi_i\}$, the \emph{symmetric}
-(Löwdin) orthogonalization
-\begin{equation}
-  \tilde\phi_i = \sum_j \phi_j\,\big(S^{-1/2}\big)_{ji}, \qquad
-  \tilde H = S^{-1/2}\, H\, S^{-1/2}
-\end{equation}
-has a special property: it is the one closest to the original orbitals, i.e.\ it
-minimizes $\sum_i \|\tilde\phi_i - \phi_i\|^2$. Each Löwdin orbital keeps the character
-($l$, $m$) and the centre of its parent atomic orbital, so it stays on the same Kwant
-site, but it acquires small tails on the neighbouring atoms. The eigenvalues are
-unchanged: $\tilde H \tilde c = E\tilde c$ with $\tilde c = S^{1/2}c$.
-
-In a crystal the transformation is done in $k$ space,
-$\tilde H(\mathbf{k}) = S(\mathbf{k})^{-1/2} H(\mathbf{k}) S(\mathbf{k})^{-1/2}$. \tool{}
-proceeds in three steps:
-\begin{enumerate}[nosep]
-  \item It evaluates this transformation on an $N\times N$ mesh (\code{--lowdin-mesh}; by
-        default $N = 2\max(2r_\text{max}+1, 15)+1$, where $r_\text{max}$ is the range of
-        $H$ and $S$).
-  \item It transforms back with
-        $\tilde H(\mathbf{R}) = N^{-2}\sum_{\mathbf{k}} \tilde H(\mathbf{k})\,e^{-2\pi i\mathbf{k}\cdot\mathbf{R}}$.
-        Each site pair $(s,t)$ gets the minimum-image $\mathbf{R}$ (smallest
-        $|\mathbf{R}A + \mathbf{p}_t - \mathbf{p}_s|$), and ties are split equally, as
-        with the Wannier90 degeneracies.
-  \item It reports the band error at random $k$-points off the mesh, together with the
-        condition number of $S$.
-\end{enumerate}
-The result is an ordinary orthogonal model, so all Kwant tools apply. There are three
-caveats:
-\begin{itemize}[nosep]
-  \item \textbf{Longer range.} $S^{-1/2}$ decays more slowly than $S$, especially for a
-        poorly conditioned overlap (diffuse basis functions, as in FHI-aims or CRYSTAL).
-        The Löwdin Hamiltonian therefore has many more hoppings, and the lead supercells
-        are larger.
-  \item \textbf{Bulk orthogonalization.} The orbitals are orthogonalized in the infinite
-        crystal, and the ribbon is then cut from them. Near an edge this is not the same
-        as orthogonalizing the ribbon itself: the tails that crossed the cut are lost.
-        The edge states and the transmission are therefore approximate. The error is
-        quantified for MoS$_2$ in Section~\ref{sec:val-nonortho}.
-  \item \textbf{Ill-conditioning.} If $S(\mathbf{k})$ has very small eigenvalues,
-        $S^{-1/2}$ amplifies numerical noise. \tool{} warns when $\mathrm{cond}(S)>10^6$.
-\end{itemize}
-For these reasons the default is to keep $S$. As shown in Section~\ref{sec:val-nonortho},
-for strongly non-orthogonal bases the Löwdin model is accurate in the bulk but fails
-badly in nanoribbons. The option is kept as experimental and as a record of this
-limitation.
 
 %=====================================================================
 \section{The generated script}
@@ -903,36 +853,6 @@ the number of open channels (grey).}
 \label{fig:yae-iv}
 \end{figure}
 
-\paragraph{Löwdin orthogonalization: a negative result, kept as a warning.}
-In the bulk, the Löwdin model converges to the exact bands as its cutoff decreases. The
-error off the mesh is 56, 6.6 and 1.0\,meV for cutoffs of $10^{-3}$, $10^{-4}$ and
-$10^{-5}$\,eV, which confirms the implementation. The price is the range: 865
-$\mathbf{R}$ vectors instead of 55, and lead supercells 3 times larger.
-
-In the ribbons, however, the Löwdin bands are wrong by up to 2.2\,eV
-(Figure~\ref{fig:yae-lowdin}). The cause is the on-site renormalization. With overlaps of
-0.44, the Löwdin on-site energies absorb the bulk environment: Mo 5s goes from 0.22 to
-24\,eV, Mo 5p from 2.6 to 26--50\,eV, and S 3s from $-12.05$ to $-7.74$\,eV. In the bulk
-these huge shifts are compensated by the Löwdin hoppings to the neighbours. At an edge
-the neighbours are missing and the compensation does not happen. In a 12\,\AA{} ribbon
-almost every atom is close to an edge, so the whole spectrum is distorted.
-
-\textbf{Conclusion:} for strongly non-orthogonal bases, such as extended Hückel and
-diffuse Gaussian or numerical basis sets, Löwdin orbitals are a valid representation of
-the \emph{bulk} only. They should not be used to cut nanostructures. The option is kept in
-\tool{} as an experimental tool and as a reminder of this problem. The default (keep $S$
-and use $H-E(S-\mathbb{1})$) is exact.
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=\linewidth]{figures/yaehmop_lowdin_vs_nonortho.png}
-\caption{Ribbon bands of non-orthogonal MoS$_2$: exact generalized problem (grey) and the
-model orthogonalized in the bulk with Löwdin, then cut (red dashed). The Löwdin
-orbitals carry bulk-renormalized on-site energies that are not compensated at the
-edges.}
-\label{fig:yae-lowdin}
-\end{figure}
-
 \subsection{Spin-polarized and spin-orbit models}\label{sec:val-spin}
 \code{tests/validate\_spin.py} (about 28\,min on 12 cores) writes
 \code{tests/results/spin/REPORT.md}. The MoS$_2$ data ship with the repository; the FHI-aims
@@ -986,9 +906,9 @@ compared with the band structure (\code{spin\_channel\_count}).
         (Figure~\ref{fig:sp-magnetic}).
   \item \textbf{Graphene SP:} $T_{\uparrow\uparrow}=T_{\downarrow\downarrow}=T/2$ equals half
         the channel count to $6\times10^{-12}$.
-  \item \textbf{Independent check of the SP channels} with Kwant's own route
-        (\code{projection="conservation"}: $S_z$ conservation law in the leads,
-        \code{smatrix(...).transmission((1, s'), (0, s))}): it agrees with \code{modes} to
+  \item \textbf{Independent check of the SP channels} with Kwant's own route, the projection
+        \code{conservation} ($S_z$ conservation law in the leads; each component from the
+        \code{transmission} of Kwant's \code{smatrix} between spin blocks): it agrees with \code{modes} to
         $6\times10^{-12}$ (synthetic ferromagnet) and $1.3\times10^{-11}$ (graphene SP), and with
         the exact $T_\text{NP}(E\pm\Delta)$ to $7\times10^{-12}$.
   \item \textbf{MoS$_2$ SOC} (12\,\AA{} ribbons): $T$ equals the channel count to $10^{-11}$.
@@ -998,14 +918,13 @@ compared with the band structure (\code{spin\_channel\_count}).
         valence-band energies, band crossings where the SOC mixes even and odd orbitals, it
         reaches $0.22\,T$ (zigzag). There the interface projections become unstable: \code{sym}
         components go down to $-0.39$ and \code{block} ones add up to $T+4.7$, which is why
-        \code{modes} is the default. The
-        spin-weighted channel counts $N_\sigma$ match the transmission collected in each spin
-        to $10^{-4}$ (armchair) and $6\times10^{-3}$ (zigzag) in the median; at the mixing
-        energies they differ by up to 0.36, because $N_\sigma$ is the spin of the lead modes
-        and $T_{\sigma'\sigma}$ the spin projected on the interface orbitals
-        (Figure~\ref{fig:mos2-soc-T}).
-  \item \textbf{$I$--$V$:} \code{run\_iv} resolves the current by spin; with \code{sym} the
-        four components add up to the total current exactly (Figure~\ref{fig:mos2-soc-iv}).
+        \code{modes} is the default. With \code{modes} the transmission collected in each spin,
+        $T_{\uparrow\uparrow}+T_{\uparrow\downarrow}$ and $T_{\downarrow\downarrow}+T_{\downarrow\uparrow}$, equals the
+        spin-weighted channel counts $N_\sigma$ of the bands to 0.002 at every energy, since both
+        measure the spin of the lead modes (Figure~\ref{fig:mos2-soc-iv}, left and centre).
+  \item \textbf{$I$--$V$:} \code{run\_iv} resolves the current by spin; the four components add
+        up to the total current exactly, and the spin-flip currents stay below 1\% of the total
+        up to 3~V (Figure~\ref{fig:mos2-soc-iv}, right).
 \end{itemize}
 
 \begin{figure}[h]
@@ -1018,17 +937,12 @@ transmission and with the spin channel counts of the ribbon bands.}
 
 \begin{figure}[h]
 \centering
-\includegraphics[width=\linewidth]{figures/mos2_soc_spin_transmission.png}
-\caption{MoS$_2$ with SOC, 12\,\AA{} ribbons: spin components of $T$ (\code{sym}) and spin
-channel counts. Right axis: spin-flip components.}
-\label{fig:mos2-soc-T}
-\end{figure}
-
-\begin{figure}[h]
-\centering
 \includegraphics[width=\linewidth]{figures/mos2_soc_iv_spin.png}
-\caption{Output \code{iv\_ribbons\_spin.png} of \code{run\_iv} for MoS$_2$ with SOC:
-spin-resolved transmission with spin channel counts (left) and current (right).}
+\caption{Output \code{iv\_ribbons\_spin.png} of \code{run\_iv} for MoS$_2$ with SOC, 12\,\AA{} zigzag (top)
+and armchair (bottom) ribbons, projection \code{modes}: spin-conserving transmission
+$T_{\uparrow\uparrow}$, $T_{\downarrow\downarrow}$ with the total and the spin channel counts of the bands (left),
+spin-flip transmission $T_{\uparrow\downarrow}$, $T_{\downarrow\uparrow}$ on its own scale (centre), and the
+spin-resolved Landauer current at 300\,K (right).}
 \label{fig:mos2-soc-iv}
 \end{figure}
 
@@ -1111,7 +1025,6 @@ wtb2kwant/
   tests/data/mos2_yaehmop_np/  MoS2 test data (YAeHMOP, non-orthogonal)
   tests/data/mos2_yaehmop_soc/ MoS2 with SOC (YAeHMOP, sparse copy)
   docs/                   logo (PNG, SVG)
-  wtb2kwant/lowdin.py     Lowdin orthogonalization (experimental)
   bin/                    launchers written by install.sh (not versioned)
   manual/                 this manual (LaTeX)
   install.sh              conda installer

@@ -24,7 +24,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from wtb2kwant.codegen import generate_script  # noqa: E402
-from wtb2kwant.lowdin import lowdin_orthogonalize  # noqa: E402
 from wtb2kwant.model import from_wtb_ham  # noqa: E402
 from wtb2kwant.readers import read_basis, read_wtb_ham  # noqa: E402
 
@@ -209,77 +208,6 @@ if not cli.skip_iv:
     w("![iv](iv_ribbons.png)")
     w("")
 
-# ---------------------------------------------------------------- 5. Löwdin
-w("## 5. Ortogonalização de Löwdin × base não ortogonal")
-w("")
-t0 = time.time()
-mL = lowdin_orthogonalize(model, cutoff=CUT_H)
-w(f"- {mL.notes[-1]}")
-nel_no = sum(np.count_nonzero(M) for M in model.hoppings.values()) + \
-    sum(np.count_nonzero(M) for M in model.overlaps.values())
-nel_L = sum(np.count_nonzero(M) for M in mL.hoppings.values())
-w(f"- elementos: {nel_no} (H + S, não ortogonal) → {nel_L} (H de Löwdin), mesmo cutoff de {CUT_H:g} eV")
-pathL = os.path.join(OUT, "kwant_model_lowdin_test.py")
-with open(pathL, "w") as f:
-    f.write(generate_script(mL, [f"{DREL}/huckel-NP.dat", f"{DREL}/basis_set-NP", "(Löwdin)"]))
-kmL = load(pathL, "km_yae_L")
-fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-w("")
-w("| fita | N (lead), não ortogonal | N (lead), Löwdin | desvio máx. das bandas Löwdin, \\|E − E_F\\| < 2 eV (meV) |")
-w("|---|---|---|---|")
-for ax, kind in zip(axes, ("zigzag", "armchair")):
-    ks1, Eno = km.ribbon_bands(km.make_ribbon(kind, W), 101)
-    _, EL = kmL.ribbon_bands(kmL.make_ribbon(kind, W), 101)
-    mask = np.abs(Eno) < 2
-    dev = np.abs(EL - Eno)[mask].max()
-    w(f"| {kind} | {km.min_supercell(kind, W)} | {kmL.min_supercell(kind, W)} | {1e3 * dev:.1f} |")
-    ax.plot(ks1, Eno, "-", color="0.6", lw=2)
-    ax.plot(ks1, EL, "r--", lw=0.8)
-    ax.plot([], [], "-", color="0.6", lw=2, label="non-orthogonal, H − E(S − 1)")
-    ax.plot([], [], "r--", lw=0.8, label="Löwdin (bulk-orthogonalized)")
-    ax.set_ylim(-2, 2)
-    ax.set_xlim(-np.pi, np.pi)
-    ax.set_xlabel(r"$k$ (rad / period)")
-    ax.set_ylabel(r"$E - E_F$ (eV)")
-    ax.set_title(f"{kind} ribbon, W = {W:g} Å")
-    ax.legend(fontsize=7, loc="lower right")
-fig.tight_layout()
-fig.savefig(os.path.join(OUT, "ribbons_lowdin_vs_nonortho.png"), dpi=150)
-w(f"\nTempo: {time.time() - t0:.0f} s.")
-w("")
-w("**Convergência no bulk** (modelo com cutoff H 1e-5, S 1e-6): o erro de Löwdin fora da malha")
-w("cai com o cutoff, o que confirma a implementação.")
-w("")
-w("| cutoff Löwdin (eV) | vetores R | erro máx. das bandas do bulk (meV) |")
-w("|---|---|---|")
-mfine = from_wtb_ham(ham, basis=basis, cutoff=1e-5, s_cutoff=1e-6)
-for c in (1e-3, 1e-4, 1e-5):
-    Lc = lowdin_orthogonalize(mfine, cutoff=c)
-    err = float(Lc.notes[-1].split("): ")[-1].split()[0])
-    w(f"| {c:g} | {len(Lc.hoppings)} | {1e3 * err:.2f} |")
-w("")
-w("**Por que as fitas diferem tanto: renormalização on-site.** As sobreposições do Hückel")
-w(f"estendido chegam a |S| = {max(np.abs(M - (np.eye(len(M)) if R == (0, 0, 0) else 0)).max() for R, M in mfine.overlaps.items()):.2f} entre vizinhos. Os termos on-site de Löwdin absorvem")
-w("o ambiente do bulk:")
-w("")
-H0 = np.diag(mfine.hoppings[(0, 0, 0)]).real
-HLd = np.diag(Lc.hoppings[(0, 0, 0)]).real
-labs = [o for st in mfine.sites for o in st.orbitals]
-names = [st.name for st in mfine.sites for _ in st.orbitals]
-w("| orbital | on-site original (eV) | on-site Löwdin (eV) |")
-w("|---|---|---|")
-for i in range(len(H0)):
-    w(f"| {names[i]} {labs[i]} | {H0[i]:.2f} | {HLd[i]:.2f} |")
-w("")
-w("No bulk essa renormalização é compensada pelos hoppings de Löwdin com os vizinhos. Numa")
-w("borda os vizinhos faltam e a compensação não acontece: os átomos de borda (e, numa fita")
-w("de 12 Å, quase todos os átomos estão perto de uma borda) ficam com níveis errados por eV.")
-w("Conclusão: para bases muito não ortogonais (Hückel estendido, bases difusas) Löwdin serve")
-w("para o bulk, mas não para nanoestruturas; o padrão do wtb2kwant (manter S e usar")
-w("H − E(S − 1)) é exato.")
-w("")
-w("![lowdin](ribbons_lowdin_vs_nonortho.png)")
-w("")
 w(f"Tempo total da validação: {time.time() - t_start:.0f} s.")
 
 with open(os.path.join(OUT, "REPORT.md"), "w") as f:

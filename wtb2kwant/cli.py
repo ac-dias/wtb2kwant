@@ -28,7 +28,7 @@ exemplos:
   # base não ortogonal (DFTB+, FHI-aims, CRYSTAL): estrutura + orbitais por espécie
   wtb2kwant fhi_tb.ham --structure geometry.in                  # 1 espécie: --norb opcional
   wtb2kwant hbn_sp_tb.ham --structure hbn_sp.out --norb B=14,N=14
-  wtb2kwant dftb.ham --structure geo.gen --norb Mo=9,S=4 --orthogonalize lowdin
+  wtb2kwant dftb.ham --structure geo.gen --norb Mo=9,S=4
 """
 
 
@@ -61,11 +61,6 @@ def main(argv=None):
                         "(opcional se houver uma só espécie)")
     g.add_argument("--s-cutoff", type=float, default=1e-6,
                    help="descarta |S| < X na sobreposição [1e-6]")
-    g.add_argument("--orthogonalize", choices=["none", "lowdin"], default="none",
-                   help="none: mantém S (transporte exato via H - E(S-1)); "
-                        "lowdin: ortogonaliza no bulk, S^-1/2 H S^-1/2 [none]")
-    g.add_argument("--lowdin-mesh", type=int, default=0,
-                   help="malha k (N x N) da ortogonalização de Löwdin [auto]")
     ap.add_argument("--cutoff", type=float, default=1e-5,
                     help="descarta |H| < cutoff (eV) [1e-5]")
     ap.add_argument("--efermi", type=float, default=None,
@@ -94,10 +89,6 @@ def main(argv=None):
         model = from_wtb_ham(ham, basis=basis, structure=struct, norb=args.norb,
                              cutoff=args.cutoff, s_cutoff=args.s_cutoff, efermi=args.efermi)
         sources += [os.path.abspath(f) for f in (args.basis, args.structure) if f]
-        if args.orthogonalize == "lowdin":
-            from .lowdin import lowdin_orthogonalize
-            model = lowdin_orthogonalize(model, mesh=args.lowdin_mesh or None,
-                                         cutoff=args.cutoff)
 
     code = generate_script(model, sources)
     with open(args.output, "w") as f:

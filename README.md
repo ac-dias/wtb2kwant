@@ -43,7 +43,6 @@ so you can copy it, share it and modify it freely.
     `--norb`.
   - Transport is **exact** through the energy-dependent substitution H′ = H − E(S − 1).
   - Bands come from the generalized problem H(k)c = E S(k)c.
-  - Löwdin orthogonalization is available as an experimental option.
 - Reads the **Wannier centres, atoms and lattice** directly from `wannier90.wout`, so you
   don't have to rerun Wannier90. For spin-polarized runs it takes two `.wout` files
   (up and down).
@@ -221,7 +220,6 @@ level with `--efermi`.
 | `--structure F` | – | crystal structure (non-orthogonal: DFTB+, FHI-aims, CRYSTAL, ...) |
 | `--norb Sp=n,...` | – | orbitals per spin of each species (with `--structure`) |
 | `--s-cutoff X` | `1e-6` | drop overlap elements with \|S\| < X |
-| `--orthogonalize {none,lowdin}` | `none` | keep S (exact), or Löwdin (experimental, see below) |
 | `--cutoff X` | `1e-5` | drop matrix elements with \|H\| < X (eV) |
 | `--efermi X` | from file | override the Fermi energy (eV) |
 | `-o FILE` | `kwant_model.py` | generated script |
@@ -249,15 +247,9 @@ about 3 min and writes `tests/results/mos2_yaehmop_np/REPORT.md`:
   is reproduced to 6 decimals.
 - **Transmission with H − E(S − 1):** equal to the number of channels of the generalized
   ribbon bands at all energies, for both ribbons (difference exactly 0).
-- **Löwdin (negative result, kept as a warning):**
-  - exact in the bulk (it converges with the cutoff);
-  - wrong by ~2 eV in nanoribbons. The Löwdin on-site energies absorb the bulk
-    environment (Mo 5s: 0.2 → 24 eV), and at an edge the missing neighbours no longer
-    compensate this.
-  - For strongly non-orthogonal bases, keep S (the default).
 
 `tests/validate_spin.py` validates the **SP and SOC** paths and the spin-resolved transport
-(about 20 min; `tests/results/spin/REPORT.md`):
+(about 28 min; `tests/results/spin/REPORT.md`):
 
 - **Graphene SP (FHI-aims):** the bands of each spin agree with the FHI-aims eigenvalues to
   8×10⁻⁶ eV, which is the precision of the FHI-aims output.
