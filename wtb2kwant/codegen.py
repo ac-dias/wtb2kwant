@@ -490,26 +490,85 @@ def _interface_spins(fsyst, lead, spins):
                            for i in fsyst.lead_interfaces[lead]])
 
 
-def spin_transmission(fsyst, e, projection="sym", spins=None):
-    """[T, T_uu, T_ud, T_du, T_dd] na energia e (lead 0 -> 1), via NEGF:
+def _lead_cell_overlap(lead, e):
+    """S da célula do lead (identidade na base ortogonal). Na base não ortogonal a
+    célula guarda H' = H - E (S - 1): S = 1 + H'(0) - H'(1)."""
+    h0 = lead.cell_hamiltonian(params=_params(0.0))
+    if not NONORTHOGONAL:
+        return np.eye(len(h0))
+    return np.eye(len(h0)) + (h0 - lead.cell_hamiltonian(params=_params(1.0)))
 
-        T_s's = Tr[ Gamma_1^(s') G_10 Gamma_0^(s) G_10^+ ]
 
-    G_10 = função de Green entre as interfaces, Gamma = i (Sigma - Sigma^+).
-    projection = "sym" (padrão): Gamma^(s) = (P_s Gamma + Gamma P_s) / 2, análogo
-        da corrente de spin simetrizada {S_z, J}/2: a soma das quatro
-        componentes é exatamente T; com SOC forte o spin-flip pode sair
-        levemente negativo.
-    projection = "block": Gamma^(s) = P_s Gamma P_s (componentes >= 0). Os
-        blocos up-dn de Gamma ficam de fora, então com SOC a soma pode diferir
-        muito de T (veja "mix" em spin_conductance) perto de cruzamentos de
-        bandas com spins misturados.
-    Se os leads conservam S_z (SP, ou SOC sem termos S_x, S_y) as duas são
-    idênticas e exatas.
+def _mode_spin_weights(phi, sp_up, Sh):
+    """Matriz W^up (nmodos x nmodos) dos modos propagantes de um lead, medida na
+    célula do lead vizinha à região de espalhamento:
+
+        W^up = M^-1/2 A^+ P_up A M^-1/2,   A = S^1/2 phi,   M = A^+ A.
+
+    É positiva e W^up + W^dn = 1. A matriz é coerente entre todos os modos:
+    os termos fora da diagonal dão conta das superposições (um spin puro
+    injetado é em geral uma combinação de modos com k diferentes, cujo spin só
+    precessa numa escala 2 pi / Delta k ao longo do lead).
+    """
+    A = Sh @ phi
+    M = A.conj().T @ A
+    ev, U = np.linalg.eigh(M)
+    Mi = (U / np.sqrt(ev)) @ U.conj().T
+    return Mi @ (A.conj().T @ (A * sp_up[:, None])) @ Mi
+
+
+def spin_transmission(fsyst, e, projection="modes", spins=None):
+    """[T, T_uu, T_ud, T_du, T_dd] na energia e (lead 0 -> 1).
+
+    projection = "modes" (padrão): spin dos modos propagantes dos leads,
+
+        T_s's = Tr[ t^+ W_1^(s') t W_0^(s) ],
+
+    t = bloco 1 <- 0 da matriz S (kwant.smatrix) e W^(s) = projeção de spin no
+    espaço dos modos propagantes, medida na célula de cada lead vizinha à região
+    de espalhamento (veja _mode_spin_weights): W_0 nos modos que entram pelo
+    lead 0, W_1 nos que saem pelo lead 1. As componentes são >= 0 e somam
+    exatamente T. Usa só os modos propagantes (sem o acoplamento lead-região),
+    então o spin coletado em cada canal acompanha spin_channel_count. Se os
+    modos têm spin puro (SP, ou SOC só com S_z) é exato.
+
+    projection = "sym" ou "block": NEGF com Gamma projetado nos orbitais da
+    interface, T_s's = Tr[Gamma_1^(s') G_10 Gamma_0^(s) G_10^+], com
+    Gamma^(s) = {P_s, Gamma}/2 ("sym", soma = T) ou P_s Gamma P_s ("block",
+    componentes >= 0, soma != T). Com SOC o Gamma da interface inclui o
+    acoplamento lead-região, que mistura os spins: perto de cruzamentos de
+    bandas as componentes ficam instáveis (até negativas com "sym", soma > 2T
+    com "block"). Mantidas para comparação.
+
     O spin de cada orbital vem dos rótulos up:/dn: (orbital_spins()); a base
-    não ortogonal não atrapalha porque S é diagonal em spin.
+    não ortogonal entra pelo S^1/2 da célula do lead ("modes") e não atrapalha
+    as projeções de orbitais porque S é diagonal em spin.
     """
     spins = orbital_spins() if spins is None else spins
+    if projection == "modes":
+        sm = kwant.smatrix(fsyst, e, params=_params(e))
+        t = sm.submatrix(1, 0)
+        out = [sm.transmission(1, 0)]
+        if t.size == 0:
+            return out + [0.0] * 4
+        W = []
+        for lead, half in ((0, 0), (1, 1)):         # 0: modos que entram; 1: que saem
+            li = sm.lead_info[lead]
+            n = len(li.momenta) // 2
+            cols = np.arange(n) + half * n
+            ld = fsyst.leads[lead]
+            sp = np.concatenate([spins[ld.sites[i].family.name] for i in range(ld.cell_size)])
+            ev, U = np.linalg.eigh(_lead_cell_overlap(ld, e))
+            Sh = (U * np.sqrt(np.clip(ev, 0, None))) @ U.conj().T
+            W.append(_mode_spin_weights(li.wave_functions[:, cols], (sp > 0).astype(float), Sh))
+        W0u, W1u = W
+        W0d, W1d = np.eye(len(W0u)) - W0u, np.eye(len(W1u)) - W1u
+        td = t.conj().T
+        for A in (W1u, W1d):
+            for B in (W0u, W0d):
+                out.append(np.trace(td @ A @ t @ B).real)
+        return out
+
     gf = kwant.greens_function(fsyst, e, out_leads=[1], in_leads=[0], params=_params(e))
     G = gf.submatrix(1, 0)
     gam = [1j * (gf.lead_info[i] - gf.lead_info[i].conj().T) for i in (0, 1)]
@@ -530,7 +589,7 @@ def spin_transmission(fsyst, e, projection="sym", spins=None):
     return out
 
 
-def spin_conductance(syst, energies, nproc=None, projection="sym"):
+def spin_conductance(syst, energies, nproc=None, projection="modes"):
     """Transmissão resolvida em spin (SP/SOC), em paralelo como conductance().
 
     Retorna dict com arrays: "total" (= conductance), "uu", "ud", "du", "dd"
@@ -832,7 +891,7 @@ def _spin_columns(res, kinds, field):
 
 
 def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
-           nproc=None, output="iv_ribbons.png", vmin=0.0, spin=None, projection="sym"):
+           nproc=None, output="iv_ribbons.png", vmin=0.0, spin=None, projection="modes"):
     """T(E) numa malha fina + curva I-V (bias de vmin a vmax, em V) para as fitas
     zigzag e armchair. Bias negativo é permitido (a corrente troca de sinal).
 
@@ -913,9 +972,11 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     if spin:
         tcols, thead = _spin_columns(res, kinds, "T")
         icols, ihead = _spin_columns(res, kinds, "I")
-        fig, axs = plt.subplots(2, 2, figsize=(11, 8))
+        soc = SYSTYPE == "SOC"
+        ncol = 3 if soc else 2
+        fig, axs = plt.subplots(2, ncol, figsize=(5.5 * ncol, 8), squeeze=False)
         for row, (kind, width) in enumerate(zip(kinds, widths)):
-            at, ai = axs[row]
+            at, ai = axs[row][0], axs[row][-1]
             T, I, sres = res[kind]
             for name, c in (("up", "C3"), ("dn", "C0")):
                 at.plot(energies - mu0, sres["N"][name], color=c, alpha=0.3, lw=2.5,
@@ -924,28 +985,33 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
             ai.plot(biases, I, color="0.6", lw=2.2, label="total")
             for k in _spin_keys_to_show():
                 col, ls = SPIN_STYLE[k]
-                at.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=1,
-                        label=SPIN_LABELS[k])
-                ai.plot(biases, sres["I"][k], color=col, ls=ls, lw=1,
-                        label=SPIN_LABELS[k])
-            at.set_title(f"{kind}, W = {width:g} Å: spin-resolved transmission", fontsize=10)
+                if k in ("uu", "dd"):
+                    at.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=1,
+                            label=SPIN_LABELS[k])
+                ai.plot(biases, sres["I"][k], color=col, ls=ls, lw=1, label=SPIN_LABELS[k])
+            at.set_title(f"{kind}, W = {width:g} Å: spin-conserving transmission", fontsize=10)
             ai.set_title(f"{kind}: spin-resolved current, T = {temperature:g} K", fontsize=10)
             at.set_xlabel(r"$E - E_F$ (eV)")
             at.set_ylabel(r"$T_{\sigma'\sigma}$ ($e^2/h$)")
             ai.set_xlabel("bias $V$ (V)")
             ai.set_ylabel(r"$I_{\sigma'\sigma}$ ($\mu$A)")
-            at.axvline(0, color="k", ls=":", lw=0.6)
-            for a in (at, ai):
+            panels = [at, ai]
+            if soc:                  # spin-flip num painel próprio (escala própria, sem eixo duplo)
+                af = axs[row][1]
+                for k in ("ud", "du"):
+                    col, ls = SPIN_STYLE[k]
+                    af.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=1,
+                            label=SPIN_LABELS[k])
+                af.set_title(f"{kind}: spin-flip transmission", fontsize=10)
+                af.set_xlabel(r"$E - E_F$ (eV)")
+                af.set_ylabel(r"$T_{\sigma'\sigma}$, $\sigma' \neq \sigma$ ($e^2/h$)")
+                panels.append(af)
+            for a in panels:
                 a.axhline(0, color="k", lw=0.4)
                 a.legend(fontsize=7, title=r"$\sigma\to\sigma'$ (lead 0 $\to$ 1)",
                          title_fontsize=7)
-            if SYSTYPE == "SOC":     # spin-flip pequeno: eixo à direita com zoom
-                af = at.twinx()
-                for k in ("ud", "du"):
-                    col, ls = SPIN_STYLE[k]
-                    af.plot(energies - mu0, sres["T"][k], color=col, ls=ls, lw=0.6,
-                            alpha=0.5)
-                af.set_ylabel("spin-flip (zoom)", fontsize=8, color="C2")
+            for a in panels[::2]:
+                a.axvline(0, color="k", ls=":", lw=0.6)
         fig.tight_layout()
         fig.savefig(base + "_spin.png", dpi=150)
         plt.close(fig)
@@ -1015,9 +1081,10 @@ def main():
     ap.add_argument("--temperature", type=float, default=300.0, help="temperatura do I-V em K [300]")
     ap.add_argument("--no-spin", action="store_true",
                     help="SP/SOC: não resolve T e I por canal de spin (só o total)")
-    ap.add_argument("--spin-projection", choices=["sym", "block"], default="sym",
-                    help="SOC: projeção de spin de Gamma (sym: {P, Gamma}/2, soma = T exata; "
-                         "block: P Gamma P, componentes >= 0, soma != T) [sym]")
+    ap.add_argument("--spin-projection", choices=["modes", "sym", "block"], default="modes",
+                    help="SOC: definição das componentes de spin (modes: spin dos modos dos "
+                         "leads, >= 0 e soma = T; sym/block: Gamma projetado na interface, "
+                         "só para comparação) [modes]")
     ap.add_argument("-o", "--output", default=None,
                     help="figura de saída [bands_ribbons.png, ou iv_ribbons.png com --iv]")
     args = ap.parse_args()

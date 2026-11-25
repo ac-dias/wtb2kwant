@@ -67,25 +67,32 @@ def test_soc_bands_match_yaehmop():
 
 @needs_soc
 def test_soc_spin_transmission(tmp_path):
-    """SOC: T = canais, T = soma das componentes (exata com 'sym'), spin-flip pequeno."""
+    """SOC: T = canais; "modes" (padrão): componentes >= 0, soma = T, spin-flip pequeno e
+    T coletado em cada spin = canais por spin; "sym": soma = T; "block": componentes >= 0."""
     pytest.importorskip("kwant")
     km = _load(_soc_model(cutoff=3e-3, s_cutoff=3e-4, efermi=-0.05), tmp_path / "km_soc.py",
                "km_soc")
     assert km.SYSTYPE == "SOC" and km.has_spin_labels()
     syst = km.make_two_terminal("zigzag", 8.0, 12.0).finalized()
     E = [-1.5, -0.3, 1.2]
-    r = km.spin_conductance(syst, E, nproc=3, projection="block")
-    nch = km.channel_count(km.make_ribbon("zigzag", 8.0), E)
+    rib = km.make_ribbon("zigzag", 8.0)
+    nch = km.channel_count(rib, E)
+    r = km.spin_conductance(syst, E, nproc=3)                       # padrão: "modes"
     assert np.allclose(r["total"], nch, atol=1e-6)
     assert np.allclose(r["total"], km.conductance(syst, E, nproc=3))
     for k in km.SPIN_KEYS:
-        assert np.all(r[k] >= -1e-10)                       # "block": componentes >= 0
-    assert np.all(np.abs(r["ud"]) < 0.05) and np.all(np.abs(r["du"]) < 0.05)
-    assert np.allclose(r["mix"], r["total"] - sum(r[k] for k in km.SPIN_KEYS))
-    assert np.abs(r["mix"]).max() < 0.15 * r["total"].max()
-    rs = km.spin_conductance(syst, E, nproc=1)                  # padrão: "sym"
+        assert np.all(r[k] >= -1e-10)
+    assert np.allclose(r["mix"], 0, atol=1e-8)
+    assert np.all(r["ud"] + r["du"] < 0.05 * r["total"])
+    nsp = km.spin_channel_count(rib, E, nk=2001)
+    assert np.allclose(r["uu"] + r["ud"], nsp["up"], atol=0.05)
+    assert np.allclose(r["dd"] + r["du"], nsp["dn"], atol=0.05)
+    r1 = km.spin_conductance(syst, E, nproc=1)
+    assert all(np.allclose(r[k], r1[k]) for k in r)
+    rs = km.spin_conductance(syst, E, nproc=1, projection="sym")
     assert np.allclose(rs["mix"], 0, atol=1e-8)
-    assert np.allclose(rs["total"], r["total"])
+    rb = km.spin_conductance(syst, E, nproc=1, projection="block")
+    assert all(np.all(rb[k] >= -1e-10) for k in km.SPIN_KEYS)
 
 
 def _magnetic_sp(m, delta):

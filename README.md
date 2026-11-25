@@ -165,18 +165,23 @@ Ts = spin_conductance(syst, [-0.5, 0.0, 0.5])
 # s' = spin collected in lead 1 ("ud" = down in, up out); Ts["total"]; Ts["mix"]
 ```
 
-The components come from the NEGF formula T_s's = Tr[Γ₁^s' G Γ₀^s G†] with spin-projected
-lead broadenings:
+By default (`--spin-projection modes`) the spin is measured on the propagating modes of
+the leads: T_s's = Tr[t† W₁^s' t W₀^s], where t is the transmission block of Kwant's
+scattering matrix and W^s the spin weight of each lead mode. This is the same quantity the
+spin channel counts use.
 
 - **SP:** spin is conserved, so the result is exact: T↑ = `uu`, T↓ = `dd`, no spin flip.
-- **SOC:** the lead modes already mix the two spins, so the split is not unique, and
-  two projections are offered:
-  - `--spin-projection sym` (default, {P, Γ}/2, the analogue of the symmetrized spin
-    current): the components always add up to T, but the spin-flip terms can come out
-    slightly negative.
-  - `block` (P Γ P): the components are never negative, but they do not add up to T. The
-    difference is reported as `mix`, and near band crossings with strong spin mixing it
-    can be larger than T.
+- **SOC:** the components are never negative and always add up to T. The lead modes
+  themselves can mix the two spins, so near band crossings with strong SOC mixing the
+  spin flip measures that mixing.
+- **For comparison:** `sym` and `block` project the spin on the orbitals of the lead
+  interface instead, with the NEGF formula Tr[Γ₁^s' G Γ₀^s G†]:
+  - `sym` uses {P, Γ}/2;
+  - `block` uses P Γ P.
+
+  With SOC the interface Γ includes the lead–device coupling, which mixes the spins, so
+  these components become unstable near band crossings: negative with `sym`, adding up to
+  more than T with `block`.
 - **Wannier90 SOC:** the `tb_hr.dat` does not say which Wannier function carries which
   spin, so pass `--soc-spin-order blocks|interleaved` to the converter.
 
@@ -278,8 +283,8 @@ API of the generated script, and the validation.
 ## Current limitations and roadmap
 
 - Supported: Wannier90-type and non-orthogonal WanTiBEXOS input; 2D crystals (ribbons).
-- Spin-resolved transport with SOC is not unique, because the lead modes mix the spins;
-  see the `--spin-projection` options above.
+- Spin-resolved transport with SOC: the lead modes themselves can mix the spins, so the
+  split into spin channels follows the spin of the lead modes (`modes`, default).
 - The scissors operator is recorded in the generated script but not applied.
 - Non-orthogonal bases: Kwant operators (local DOS, currents) are not yet adapted to S.
 - Planned: nanotubes; 3D bulk crystals and slabs.
@@ -299,8 +304,9 @@ API of the generated script, and the validation.
 **Transport separated by spin channel**
 
 Already validated: an exact synthetic ferromagnet (T↑↑, T↓↓ = shifted NP transmission and
-spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2) and MoS₂ SOC ribbons (sum rule with
-`sym`). Still pending:
+spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2) and MoS₂ SOC ribbons (non-negative
+components, sum rule, spin collected in each channel = spin channel counts). Still
+pending:
 
 - **Real magnetic SP system:** a ferromagnetic or half-metallic 2D crystal with reference
   data; so far only the synthetic exchange model is tested.
@@ -311,8 +317,7 @@ spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2) and MoS₂ SOC ribbo
   Hamiltonian.
 - **Sensitivity of the SOC split:** with SOC the split into spin channels is not unique.
   Check how the components depend on the position of the lead interface (lead supercell,
-  scattering-region length) and how `sym`, `block` and the spin-weighted channel counts
-  compare.
+  scattering-region length); with `modes` they should not depend on it.
 - **Physical spin flip:** systems where the spin flip comes from scattering rather than
   from the lead modes, such as SOC ribbons with defects or disorder, or a Rashba term
   from an out-of-plane field.

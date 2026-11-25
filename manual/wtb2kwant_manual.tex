@@ -30,7 +30,7 @@
 \title{\includegraphics[width=0.32\linewidth]{figures/wtb2kwant_logo.png}\\[10pt]
 \tool{} --- User Manual\\[4pt]
 \large From \wtb{} tight-binding Hamiltonians to Kwant transport scripts}
-\author{Version 0.3.0}
+\author{Version 0.3.1}
 \date{\today}
 
 \begin{document}
@@ -85,7 +85,7 @@ $\;\longrightarrow\;$ \tool{} $\;\longrightarrow\;$
         (Section~\ref{sec:validation}).
 \end{itemize}
 
-\paragraph{Status (v0.3.0).}
+\paragraph{Status (v0.3.1).}
 \begin{itemize}[nosep]
   \item Supported:
         \begin{itemize}[nosep]
@@ -595,7 +595,7 @@ python kwant_model.py [--width-zz W] [--width-ac W] [--emin E] [--emax E]
 python kwant_model.py --iv [--vrange VMIN VMAX] [--nv NV] [--de DE] [--temperature K]
                       [--hop-cutoff X] [--length L] [--nproc P] [-o FIGURE]
 # SP/SOC only
-                      [--no-spin] [--spin-projection {sym,block}]
+                      [--no-spin] [--spin-projection {modes,sym,block}]
 \end{lstlisting}
 Widths and lengths are in \AA{} (default 20 and 30). The energy window defaults to
 $[-3, 3]$\,eV around $E_F$, sampled with \code{--ne} 61 energies for $T(E)$. The output
@@ -625,34 +625,45 @@ SP and SOC Hamiltonians carry the spin explicitly: each Kwant site holds the up 
 spin-orbitals of an atom, and the orbital labels in \code{SITES} start with \code{up:} or
 \code{dn:}. The labels come from the \code{.basis} file, from the spin blocks of the
 \code{.ham} or SP \code{tb\_hr.dat}, or, for Wannier90 SOC, from \code{--soc-spin-order}.
-\code{spin\_conductance} computes
+By default (\code{projection="modes"}) \code{spin\_conductance} measures the spin on the
+propagating modes of the leads:
 \begin{equation}
-  T_{\sigma'\sigma}(E) = \operatorname{Tr}\!\left[\Gamma_1^{\sigma'}\, G_{10}\,
-  \Gamma_0^{\sigma}\, G_{10}^\dagger\right],
+  T_{\sigma'\sigma}(E) = \operatorname{Tr}\!\left[t^\dagger\, W_1^{\sigma'}\, t\, W_0^{\sigma}\right],
 \end{equation}
-where $\sigma$ is the spin injected from lead 0, $\sigma'$ the spin collected in lead 1,
-$G_{10}$ the retarded Green's function between the two lead interfaces
-(\code{kwant.greens\_function}) and $\Gamma_i = i(\Sigma_i-\Sigma_i^\dagger)$. The keys are
-\code{uu}, \code{ud} (down in, up out), \code{du} and \code{dd}. Two spin projections of
-$\Gamma$ are available:
-\begin{itemize}[nosep]
-  \item \code{sym} (default): $\Gamma^\sigma = \tfrac12\{P_\sigma,\Gamma\}$, the analogue of the
-        symmetrized spin current $\tfrac12\{S_z, J\}$. The components add up to $T$ exactly,
-        but with strong spin mixing the spin-flip terms can be slightly negative.
-  \item \code{block}: $\Gamma^\sigma = P_\sigma\Gamma P_\sigma$. The components are never
-        negative, but the up-down blocks of $\Gamma$ are left out, so with SOC
-        $T-\sum T_{\sigma'\sigma}$ (key \code{mix}) is not zero. Near band crossings where the
-        SOC mixes the spins strongly, the sum can exceed $2T$ (Section~\ref{sec:val-spin}),
-        which is why \code{sym} is the default.
-\end{itemize}
-With SOC the lead modes themselves mix the two spins, so no split of $T$ into spin
-channels is unique. When the leads conserve $S_z$ (SP, or SOC without $S_x$, $S_y$ terms)
-the two choices coincide and are exact. In
-the SP case, the spin-flip terms vanish, $T_\uparrow = $ \code{uu} and
-$T_\downarrow = $ \code{dd}. The non-orthogonal basis needs no special care, because $S$ is
-diagonal in spin. The Landauer currents of the components use a spin degeneracy of 1,
-$I_{\sigma'\sigma} = (e/h)\int T_{\sigma'\sigma}(f_L-f_R)\,dE$, so the four components add
-up to the total current (exactly with \code{sym}). The cost is the same as \code{conductance}.
+where $\sigma$ is the spin injected from lead 0, $\sigma'$ the spin collected in lead 1, $t$
+the $1\leftarrow0$ block of the scattering matrix (\code{kwant.smatrix}), $W_0^\sigma$ the
+spin weight of the incoming modes of lead 0 and $W_1^{\sigma'}$ that of the outgoing modes of
+lead 1. $W^\uparrow = M^{-1/2} A^\dagger P_\uparrow A\, M^{-1/2}$, with $A = S^{1/2}\phi$ the
+propagating-mode wave functions on the lead cell next to the scattering region (with the
+cell overlap $S$ in a non-orthogonal basis) and $M = A^\dagger A$;
+$W^\downarrow = \mathbb{1} - W^\uparrow$. Both are positive, so the components are never
+negative, and they add up to $T$ exactly. The matrices are coherent over all modes: a
+pure spin injected into the lead is in general a superposition of modes with different
+$k$ (with SOC, nearly degenerate pairs of opposite-spin bands hybridize), and its spin
+only precesses over a length $2\pi/\Delta k$; weighting each mode separately would count
+that hybridization as spin flip. Only the propagating modes
+enter, not the lead--device coupling, so the transmission collected in each spin
+follows the spin channel counts. The keys are \code{uu}, \code{ud} (down in, up out),
+\code{du} and \code{dd}.
+
+For comparison, \code{projection="sym"} or \code{"block"} uses the NEGF formula
+$T_{\sigma'\sigma} = \operatorname{Tr}[\Gamma_1^{\sigma'} G_{10}\Gamma_0^{\sigma} G_{10}^\dagger]$,
+with $G_{10}$ the Green's function between the lead interfaces, $\Gamma_i =
+i(\Sigma_i-\Sigma_i^\dagger)$, and the spin projected on the interface orbitals:
+$\Gamma^\sigma = \tfrac12\{P_\sigma,\Gamma\}$ (\code{sym}, sum $=T$) or
+$P_\sigma\Gamma P_\sigma$ (\code{block}, components $\ge 0$, sum $\neq T$, key \code{mix}).
+With SOC the interface $\Gamma$ contains the lead--device coupling, which mixes the spins
+even when the lead modes have a pure spin. Near band crossings these components become
+unstable: negative with \code{sym}, adding up to more than $2T$ with \code{block}
+(Section~\ref{sec:val-spin}).
+
+When the lead modes have a pure spin (SP, or SOC with only $S_z$ terms) all three
+definitions coincide and are exact; in the SP case the spin-flip terms vanish,
+$T_\uparrow = $ \code{uu} and $T_\downarrow = $ \code{dd}. With general SOC the lead modes
+themselves can mix the spins, and the spin-flip terms of \code{modes} measure that mixing.
+The Landauer currents of the components use a spin degeneracy of 1,
+$I_{\sigma'\sigma} = (e/h)\int T_{\sigma'\sigma}(f_L-f_R)\,dE$, so the four components add up
+to the total current. The cost is the same as \code{conductance}.
 \begin{lstlisting}[language=Python]
 from kwant_model import make_two_terminal, spin_conductance
 syst = make_two_terminal("zigzag", width=20.0, length=30.0).finalized()
@@ -1058,8 +1069,8 @@ run takes about 13\,min on 12 cores.
                 $T_{\uparrow\downarrow}$, $T_{\downarrow\uparrow}$ against an independent
                 spin-resolved NEGF code (e.g.\ TBtrans) on the same Hamiltonian;
           \item the sensitivity of the SOC split to the position of the lead interface
-                (lead supercell, scattering-region length), and how \code{sym},
-                \code{block} and the spin-weighted channel counts compare;
+                (lead supercell, scattering-region length); with \code{modes} it should
+                not depend on it;
           \item physical spin flip from scattering rather than from the lead modes: SOC
                 ribbons with defects or disorder, or a Rashba term from an out-of-plane
                 field;

@@ -1,2 +1,2 @@
 """wtb2kwant: hamiltonianos TB do WanTiBEXOS -> scripts Kwant."""
-__version__ = "0.3.0"
+__version__ = "0.3.1"

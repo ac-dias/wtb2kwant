@@ -103,9 +103,10 @@ w("")
 w(f"Gerado em {datetime.datetime.now():%Y-%m-%d %H:%M} por `tests/validate_spin.py`.")
 w("")
 w("Convenção do transporte resolvido em spin: T_σ'σ, com σ = spin injetado no lead 0 e")
-w("σ' = spin coletado no lead 1 (`uu`, `ud` = entra ↓ e sai ↑, `du`, `dd`). Calculado por")
-w("NEGF, T_σ'σ = Tr[Γ₁^σ' G₁₀ Γ₀^σ G₁₀†], com Γ^σ = {P_σ, Γ}/2 (projeção `sym`, padrão) ou")
-w("Γ^σ = P_σ Γ P_σ (`block`). Com spin conservado (SP) as duas são idênticas e exatas.")
+w("σ' = spin coletado no lead 1 (`uu`, `ud` = entra ↓ e sai ↑, `du`, `dd`). Padrão (`modes`):")
+w("spin dos modos propagantes dos leads, T_σ'σ = Tr[t† W₁^σ' t W₀^σ], com t da matriz S e W^σ o")
+w("peso de spin dos modos. Para comparação: NEGF com Γ projetado nos orbitais da interface,")
+w("Γ^σ = {P_σ, Γ}/2 (`sym`) ou P_σ Γ P_σ (`block`). Com spin conservado (SP) as três coincidem.")
 w("")
 
 # ====================================================================== 1. aims SP
@@ -383,84 +384,80 @@ t0 = time.time()
 ksoc = load(from_wtb_ham(hs, basis=bs, cutoff=1e-3, s_cutoff=1e-4, efermi=-0.05),
             "kwant_model_soc")
 WS = 12.0
-Es = np.round(np.arange(-2.0, 2.0001, 0.1), 6)
+Es = np.round(np.arange(-2.0, 2.0001, 0.05), 6)
 res_soc = {}
 for kind in ("zigzag", "armchair"):
     syst = ksoc.make_two_terminal(kind, WS, 20.0).finalized()
-    rb = ksoc.spin_conductance(syst, Es, projection="block")
+    rm = ksoc.spin_conductance(syst, Es)
     rs = ksoc.spin_conductance(syst, Es, projection="sym")
+    rb = ksoc.spin_conductance(syst, Es, projection="block")
     rib = ksoc.make_ribbon(kind, WS)
-    nch = ksoc.channel_count(rib, Es)
-    nsp = ksoc.spin_channel_count(rib, Es)
-    res_soc[kind] = (rb, rs, nch, nsp)
+    res_soc[kind] = dict(modes=rm, sym=rs, block=rb, nch=ksoc.channel_count(rib, Es),
+                         nsp=ksoc.spin_channel_count(rib, Es))
 w(f"Fitas W = {WS:g} Å (cutoff 1e-3 eV em H, 1e-4 em S), {len(Es)} energias em [−2, 2] eV.")
 w("")
-w("| fita | máx. \\|T − canais\\| | `sym`: máx. \\|T − ΣT_σ'σ\\| | `sym`: máx. \\|spin-flip\\| / T "
-  "| `sym`: mediana spin-flip / T | `block`: máx. \\|T − ΣT_σ'σ\\| / T |")
+w("| fita | projeção | máx. \\|T − ΣT_σ'σ\\| | componente mínima | máx. spin-flip / T | "
+  "mediana spin-flip / T | máx. \\|N↑ − (T↑↑ + T↑↓)\\| |")
+w("|---|---|---|---|---|---|---|")
+for kind, d in res_soc.items():
+    nz = d["modes"]["total"] > 0.5
+    for proj in ("modes", "sym", "block"):
+        r = d[proj]
+        flip = (np.abs(r["ud"]) + np.abs(r["du"]))[nz] / r["total"][nz]
+        cmin = min(r[k][nz].min() for k in ("uu", "ud", "du", "dd"))
+        dn = np.abs(d["nsp"]["up"] - (r["uu"] + r["ud"]))[nz].max()
+        w(f"| {kind} | `{proj}` | {np.abs(r['mix']).max():.1e} | {cmin:+.3f} | {flip.max():.3f} | "
+          f"{np.median(flip):.1e} | {dn:.3f} |")
+w("")
+w(f"T total = canais das bandas em todas as energias (máx. desvio "
+  f"{max(np.abs(d['modes']['total'] - d['nch']).max() for d in res_soc.values()):.1e}).")
+w("")
+w("Energias com maior spin-flip em `modes`, comparadas com `sym`:")
+w("")
+w("| fita | E − E_F (eV) | T | `modes`: ↑↑ / ↓↓ / ↑↓ / ↓↑ | `sym`: ↑↑ / ↓↓ / ↑↓ / ↓↑ | canais ↑ / ↓ |")
 w("|---|---|---|---|---|---|")
-for kind, (rb, rs, nch, nsp) in res_soc.items():
-    nz = rb["total"] > 0.5
-    flip = (np.abs(rs["ud"]) + np.abs(rs["du"]))[nz] / rs["total"][nz]
-    mixr = (np.abs(rb["mix"])[nz] / rb["total"][nz]).max()
-    w(f"| {kind} | {np.abs(rb['total'] - nch).max():.1e} | {np.abs(rs['mix']).max():.1e} | "
-      f"{flip.max():.2f} | {np.median(flip):.1e} | {mixr:.2f} |")
+for kind, d in res_soc.items():
+    rm, rs = d["modes"], d["sym"]
+    fl = np.where(rm["total"] > 0.5, (rm["ud"] + rm["du"]) / np.maximum(rm["total"], 1e-9), 0)
+    for i in sorted(np.argsort(-fl)[:4]):
+        w(f"| {kind} | {Es[i]:+.2f} | {rm['total'][i]:.3f} | "
+          f"{rm['uu'][i]:.3f} / {rm['dd'][i]:.3f} / {rm['ud'][i]:.3f} / {rm['du'][i]:.3f} | "
+          f"{rs['uu'][i]:.3f} / {rs['dd'][i]:.3f} / {rs['ud'][i]:+.3f} / {rs['du'][i]:+.3f} | "
+          f"{d['nsp']['up'][i]:.2f} / {d['nsp']['dn'][i]:.2f} |")
 w("")
-w("Energias com spin-flip (`sym`) acima de 2% de T:")
-w("")
-w("| fita | E − E_F (eV) | T | T↑↑ | T↓↓ | T↑↓ | T↓↑ | `block`: ΣT_σ'σ |")
-w("|---|---|---|---|---|---|---|---|")
-for kind, (rb, rs, nch, nsp) in res_soc.items():
-    for i, e in enumerate(Es):
-        t = rs["total"][i]
-        if t > 0.5 and (abs(rs["ud"][i]) + abs(rs["du"][i])) > 0.02 * t:
-            w(f"| {kind} | {e:+.1f} | {t:.3f} | {rs['uu'][i]:.3f} | {rs['dd'][i]:.3f} | "
-              f"{rs['ud'][i]:+.3f} | {rs['du'][i]:+.3f} | {t - rb['mix'][i]:.3f} |")
-w("")
-w("")
-w("Fita perfeita: canais por spin das bandas (N_σ, ponderados pelo peso de spin ⟨P_σ⟩ de cada "
-  "modo, por isso fracionários) × transmissão coletada em cada spin (T↑↑ + T↑↓ para ↑, "
-  "`sym`):")
-w("")
-w("| fita | máx. \\|N↑ + N↓ − T\\| | máx. \\|N↑ − (T↑↑ + T↑↓)\\| | mediana | "
-  "máx. \\|N↓ − (T↓↓ + T↓↑)\\| | mediana |")
-w("|---|---|---|---|---|---|")
-for kind, (rb, rs, nch, nsp) in res_soc.items():
-    du = np.abs(nsp["up"] - (rs["uu"] + rs["ud"]))
-    dd = np.abs(nsp["dn"] - (rs["dd"] + rs["du"]))
-    w(f"| {kind} | {np.abs(nsp['up'] + nsp['dn'] - rs['total']).max():.1e} | {du.max():.3f} | "
-      f"{np.median(du):.1e} | {dd.max():.3f} | {np.median(dd):.1e} |")
-w("")
-w("- Com SOC os dois números não precisam coincidir: N_σ é o spin médio dos modos do lead "
-  "longe da interface, e T_σ'σ projeta o spin nos orbitais da interface. Quando o spin é "
-  "quase conservado eles batem; nas energias de mistura forte a diferença mede a ambiguidade "
-  "da divisão em canais de spin.")
-w("- Perto de E_F e na banda de condução o spin é quase conservado (spin-flip ≲ 10⁻³ T), como "
-  "esperado para o MoS2, em que o SOC dominante (tipo Ising) conserva S_z.")
-w("- Na banda de valência há energias isoladas (cruzamentos de bandas em que o SOC mistura "
-  "orbitais pares e ímpares) com mistura forte de spin. Ali a divisão de T em canais de spin "
-  "deixa de ser única. Com `block` (P Γ P) os blocos ↑↓ de Γ ficam de fora e a soma das "
-  "componentes pode passar de 2T (última coluna), o que não tem sentido físico. Com `sym` "
-  "({P, Γ}/2, o análogo da corrente de spin simetrizada {S_z, J}/2) a soma é sempre T e as "
-  "componentes ficam limitadas, embora possam sair levemente negativas. Por isso `sym` é o padrão.")
+w("- `modes` mede o spin nos modos propagantes dos leads, a mesma grandeza dos canais por spin "
+  "(N_σ): as componentes são ≥ 0, somam exatamente T, e o T coletado em cada spin acompanha N_σ.")
+w("- Perto de E_F e na banda de condução o spin é quase conservado, como esperado para o MoS2, "
+  "em que o SOC dominante (tipo Ising) conserva S_z. O spin-flip só cresce em cruzamentos de "
+  "bandas da valência em que o SOC mistura orbitais pares e ímpares.")
+w("- `sym` e `block` projetam o spin nos orbitais da interface, onde Γ inclui o acoplamento "
+  "lead-região, que mistura os spins. Nesses cruzamentos as componentes ficam instáveis: "
+  "negativas com `sym` e com soma muito maior que T com `block` (colunas acima). Ficam só "
+  "como comparação.")
 w(f"- Tempo: {time.time() - t0:.0f} s.")
-fig, axs = plt.subplots(1, 2, figsize=(11, 4.4))
-for ax, (kind, (rb, rs, nch, nsp)) in zip(axs, res_soc.items()):
-    ax.plot(Es, nch, color="0.8", lw=3, drawstyle="steps-mid", label="channels")
-    ax.plot(Es, nsp["up"], color="C3", alpha=0.3, lw=3, drawstyle="steps-mid",
+fig, axs = plt.subplots(2, 2, figsize=(11, 7.5), sharex=True,
+                        gridspec_kw=dict(height_ratios=[2.2, 1]))
+for col, (kind, d) in enumerate(res_soc.items()):
+    rm, rs = d["modes"], d["sym"]
+    ax, af = axs[0][col], axs[1][col]
+    ax.plot(Es, d["nch"], color="0.8", lw=3, drawstyle="steps-mid", label="channels")
+    ax.plot(Es, d["nsp"]["up"], color="C3", alpha=0.3, lw=3, drawstyle="steps-mid",
             label="channels ↑ (bands)")
-    ax.plot(Es, nsp["dn"], color="C0", alpha=0.3, lw=3, drawstyle="steps-mid",
+    ax.plot(Es, d["nsp"]["dn"], color="C0", alpha=0.3, lw=3, drawstyle="steps-mid",
             label="channels ↓ (bands)")
-    ax.plot(Es, rs["total"], "k.", ms=4, label="total")
-    ax.plot(Es, rs["uu"], color="C3", lw=1.2, label=r"$T_{\uparrow\uparrow}$")
-    ax.plot(Es, rs["dd"], "--", color="C0", lw=1.2, label=r"$T_{\downarrow\downarrow}$")
-    af = ax.twinx()
-    af.plot(Es, rs["ud"], color="C2", lw=1, label=r"$T_{\uparrow\downarrow}$ (↓ in, ↑ out)")
-    af.plot(Es, rs["du"], "--", color="C1", lw=1, label=r"$T_{\downarrow\uparrow}$ (↑ in, ↓ out)")
-    af.set_ylabel("spin-flip transmission", color="C2")
-    ax.set_xlabel(r"$E - E_F$ (eV)"); ax.set_ylabel(r"$T$ ($e^2/h$)")
-    ax.set_title(f"MoS$_2$ SOC, {kind}, W = {WS:g} Å", fontsize=10)
-    h1, l1 = ax.get_legend_handles_labels(); h2, l2 = af.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper center")
+    ax.plot(Es, rm["total"], "k.", ms=4, label="total")
+    ax.plot(Es, rm["uu"], color="C3", lw=1.2, label=r"$T_{\uparrow\uparrow}$")
+    ax.plot(Es, rm["dd"], "--", color="C0", lw=1.2, label=r"$T_{\downarrow\downarrow}$")
+    ax.set_ylabel(r"$T$ ($e^2/h$)")
+    ax.set_title(f"MoS$_2$ SOC, {kind}, W = {WS:g} Å (projection: modes)", fontsize=10)
+    ax.legend(fontsize=7, loc="upper center")
+    af.plot(Es, rm["ud"], color="C2", lw=1.2, label=r"$T_{\uparrow\downarrow}$ (↓ in, ↑ out), modes")
+    af.plot(Es, rm["du"], "--", color="C1", lw=1.2, label=r"$T_{\downarrow\uparrow}$ (↑ in, ↓ out), modes")
+    af.plot(Es, rs["ud"], ":", color="C2", lw=0.9, label=r"$T_{\uparrow\downarrow}$, sym (interface)")
+    af.plot(Es, rs["du"], ":", color="C1", lw=0.9, label=r"$T_{\downarrow\uparrow}$, sym (interface)")
+    af.axhline(0, color="k", lw=0.4)
+    af.set_xlabel(r"$E - E_F$ (eV)"); af.set_ylabel(r"spin flip ($e^2/h$)")
+    af.legend(fontsize=6, ncol=2)
 fig.tight_layout(); fig.savefig(os.path.join(OUT, "mos2_soc_spin_transmission.png"), dpi=150)
 plt.close(fig)
 w("")
