@@ -401,12 +401,23 @@ def make_ribbon(kind="zigzag", width=20.0, supercell=1):
     return rib
 
 
-def make_two_terminal(kind="zigzag", width=20.0, length=30.0, supercell=None):
+def _spin_conservation_law():
+    """Lei de conservação S_z dos leads: diag(+1 up, -1 dn) por site (rótulos up:/dn:)."""
+    spins = orbital_spins()
+    mats = {name: np.diag(v.astype(float)) for name, v in spins.items()}
+    return lambda site: mats[site.family.name]
+
+
+def make_two_terminal(kind="zigzag", width=20.0, length=30.0, supercell=None, spin_conservation=False):
     """Região de espalhamento finita (comprimento em Å) + dois leads de fita.
 
     Os leads usam supercélula de N períodos (N = min_supercell(kind, width) por
     padrão). A região de espalhamento precisa ser pelo menos tão longa quanto a
     célula do lead; se `length` for menor, ela é aumentada automaticamente.
+
+    spin_conservation=True (só SP): os leads ganham a lei de conservação S_z do
+    Kwant, que separa os modos por spin; spin_transmission(..., "conservation")
+    usa então smatrix(...).transmission((1, s'), (0, s)) diretamente.
     """
     lat = make_lattice()
     period = ribbon_period(kind)
@@ -426,7 +437,11 @@ def make_two_terminal(kind="zigzag", width=20.0, length=30.0, supercell=None):
     bulk = make_bulk(lat)
     syst = kwant.Builder()
     syst.fill(bulk, shape, starts)
-    lead = kwant.Builder(kwant.TranslationalSymmetry(-lat.vec(tuple(N * p for p in period))))
+    if spin_conservation and not (SYSTYPE == "SP" and has_spin_labels()):
+        raise ValueError("spin_conservation só vale para modelos SP (spin conservado, rótulos up:/dn:)")
+    claw = _spin_conservation_law() if spin_conservation else None
+    lead = kwant.Builder(kwant.TranslationalSymmetry(-lat.vec(tuple(N * p for p in period))),
+                         conservation_law=claw)
     lead.fill(bulk, shape_w, starts)
     syst.attach_lead(lead)
     syst.attach_lead(lead.reversed())
@@ -540,11 +555,28 @@ def spin_transmission(fsyst, e, projection="modes", spins=None):
     bandas as componentes ficam instáveis (até negativas com "sym", soma > 2T
     com "block"). Mantidas para comparação.
 
+    projection = "conservation" (só SP; leads de make_two_terminal(...,
+    spin_conservation=True)): conferência independente pela rota do próprio
+    Kwant. A lei de conservação S_z separa os modos dos leads por spin e
+    T_s's = smatrix.transmission((1, s'), (0, s)), sem projeção nenhuma do
+    wtb2kwant (blocos em ordem crescente do autovalor: 0 = dn, 1 = up). Com
+    spin conservado deve coincidir com "modes".
+
     O spin de cada orbital vem dos rótulos up:/dn: (orbital_spins()); a base
     não ortogonal entra pelo S^1/2 da célula do lead ("modes") e não atrapalha
     as projeções de orbitais porque S é diagonal em spin.
     """
     spins = orbital_spins() if spins is None else spins
+    if projection == "conservation":
+        sm = kwant.smatrix(fsyst, e, params=_params(e))
+        if any(len(li.block_nmodes) != 2 for li in sm.lead_info):   # sem lei de conservação: 1 bloco
+            raise ValueError('projection "conservation": os leads não têm lei de conservação; '
+                             "use make_two_terminal(..., spin_conservation=True)")
+        blk = {1: 1, -1: 0}                          # spin -> bloco (autovalores crescentes)
+        out = [sm.transmission(1, 0)]
+        for so, si in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+            out.append(sm.transmission((1, blk[so]), (0, blk[si])))
+        return out
     if projection == "modes":
         sm = kwant.smatrix(fsyst, e, params=_params(e))
         t = sm.submatrix(1, 0)
@@ -921,7 +953,8 @@ def run_iv(widths, vmax=3.0, nv=61, de=0.01, length=30.0, temperature=300.0,
     kinds = ("zigzag", "armchair")
     for kind, width in zip(kinds, widths):
         t0 = time.time()
-        syst = make_two_terminal(kind, width, length).finalized()
+        syst = make_two_terminal(kind, width, length,
+                                 spin_conservation=bool(spin) and projection == "conservation").finalized()
         if spin:
             Ts = spin_conductance(syst, energies, nproc, projection)
             T = Ts["total"]
@@ -1081,10 +1114,11 @@ def main():
     ap.add_argument("--temperature", type=float, default=300.0, help="temperatura do I-V em K [300]")
     ap.add_argument("--no-spin", action="store_true",
                     help="SP/SOC: não resolve T e I por canal de spin (só o total)")
-    ap.add_argument("--spin-projection", choices=["modes", "sym", "block"], default="modes",
-                    help="SOC: definição das componentes de spin (modes: spin dos modos dos "
+    ap.add_argument("--spin-projection", choices=["modes", "sym", "block", "conservation"], default="modes",
+                    help="definição das componentes de spin (modes: spin dos modos dos "
                          "leads, >= 0 e soma = T; sym/block: Gamma projetado na interface, "
-                         "só para comparação) [modes]")
+                         "só para comparação; conservation: só SP, lei de conservação S_z do "
+                         "Kwant nos leads, conferência independente) [modes]")
     ap.add_argument("-o", "--output", default=None,
                     help="figura de saída [bands_ribbons.png, ou iv_ribbons.png com --iv]")
     args = ap.parse_args()
@@ -1150,7 +1184,8 @@ def main():
 
         if transport:
             t0 = time.time()
-            syst = make_two_terminal(kind, width, args.length).finalized()
+            syst = make_two_terminal(kind, width, args.length,
+                                     spin_conservation=spin and args.spin_projection == "conservation").finalized()
             if spin:
                 sdata[kind] = spin_conductance(syst, energies, args.nproc, args.spin_projection)
                 T = sdata[kind]["total"]

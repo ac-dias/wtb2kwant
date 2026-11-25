@@ -332,6 +332,14 @@ w(f"- spin-flip: máx. |T↑↓|, |T↓↑| = {max(np.abs(r['ud']).max(), np.abs
 w(f"- Fita perfeita, canais por spin das bandas (`spin_channel_count`): "
   f"máx. |T↑↑ − N↑| = {np.abs(r['uu'] - nsp['up']).max():.1e}, "
   f"máx. |T↓↓ − N↓| = {np.abs(r['dd'] - nsp['dn']).max():.1e}.")
+# conferência independente: lei de conservação S_z do Kwant nos leads
+ssc = ksp.make_two_terminal("zigzag", Wm, 15.0, spin_conservation=True).finalized()
+rc = ksp.spin_conductance(ssc, Eg, projection="conservation")
+w(f"- Rota do próprio Kwant (`conservation`: lei de conservação S_z nos leads, "
+  f"`smatrix.transmission((1, s'), (0, s))`): máx. |T↑↑ − T↑↑(modes)| = "
+  f"{np.abs(rc['uu'] - r['uu']).max():.1e}, máx. |T↓↓ − T↓↓(modes)| = {np.abs(rc['dd'] - r['dd']).max():.1e}; "
+  f"contra o exato: {np.abs(rc['uu'] - Tnp_p).max():.1e} e {np.abs(rc['dd'] - Tnp_m).max():.1e}; "
+  f"spin-flip {max(np.abs(rc['ud']).max(), np.abs(rc['du']).max()):.1e}.")
 w(f"- Tempo: {time.time() - t0:.0f} s.")
 fig, ax = plt.subplots(figsize=(6, 4.2))
 ax.plot(Eg, nsp["up"], color="C3", alpha=0.3, lw=3, drawstyle="steps-mid", label="channels ↑ (bands)")
@@ -371,7 +379,11 @@ if os.path.isdir(DAIMS):
         w(f"| {e:+.1f} | {nch[i]} | {rg['total'][i]:.6f} | {rg['uu'][i]:.6f} | {rg['dd'][i]:.6f} | "
           f"{rg['ud'][i] + rg['du'][i]:.1e} |")
     w("")
+    sgc = kg.make_two_terminal("zigzag", 8.0, 10.0, spin_conservation=True).finalized()
+    rgc = kg.spin_conductance(sgc, Eg2, projection="conservation")
     w(f"T↑↑ = T↓↓ = T/2 = canais/2 (máx. desvio {np.abs(rg['uu'] - nch / 2).max():.1e}). "
+      f"Rota do próprio Kwant (`conservation`): máx. diferença para `modes` "
+      f"{max(np.abs(rgc[k] - rg[k]).max() for k in ('uu', 'ud', 'du', 'dd')):.1e}. "
       f"Tempo: {time.time() - t0:.0f} s.")
 else:
     w("Dados do FHI-aims ausentes: seção pulada.")

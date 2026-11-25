@@ -153,6 +153,36 @@ def test_sp_spin_channels_magnetic(tmp_path):
     assert np.allclose(Iu + Id, It)
 
 
+@needs_np
+def test_sp_conservation_law_route(tmp_path):
+    """Conferência independente dos canais SP: lei de conservação S_z do Kwant nos leads e
+    smatrix.transmission((1, s'), (0, s)) ("conservation") = projeção "modes" = T_NP(E -+ delta)."""
+    pytest.importorskip("kwant")
+    ham = read_wtb_ham(f"{DNP}/huckel-NP.dat")
+    mnp = from_wtb_ham(ham, basis=read_basis(f"{DNP}/basis_set-NP"), cutoff=3e-3,
+                       s_cutoff=3e-4, efermi=-0.05)
+    delta = 0.3
+    knp = _load(mnp, tmp_path / "km_np2.py", "km_np2")
+    ksp = _load(_magnetic_sp(mnp, delta), tmp_path / "km_sp2.py", "km_sp2")
+    E = np.array([-1.3, -0.4, 0.2, 1.1])
+    for kind, w in (("zigzag", 8.0), ("armchair", 9.0)):
+        sc = ksp.make_two_terminal(kind, w, 12.0, spin_conservation=True).finalized()
+        sm = ksp.make_two_terminal(kind, w, 12.0).finalized()
+        rc = ksp.spin_conductance(sc, E, nproc=2, projection="conservation")
+        rm = ksp.spin_conductance(sm, E, nproc=2)
+        for k in ("total",) + ksp.SPIN_KEYS:
+            assert np.allclose(rc[k], rm[k], atol=1e-8), (kind, k, rc[k], rm[k])
+        assert np.allclose(rc["ud"], 0, atol=1e-12) and np.allclose(rc["du"], 0, atol=1e-12)
+        snp = knp.make_two_terminal(kind, w, 12.0).finalized()
+        assert np.allclose(rc["uu"], knp.conductance(snp, E + delta, nproc=2), atol=1e-6)
+        assert np.allclose(rc["dd"], knp.conductance(snp, E - delta, nproc=2), atol=1e-6)
+    # sem lei de conservação nos leads a rota recusa; e ela só vale para SP
+    with pytest.raises(ValueError):
+        ksp.spin_transmission(sm, 0.2, "conservation")
+    with pytest.raises(ValueError):
+        knp.make_two_terminal("zigzag", 8.0, 12.0, spin_conservation=True)
+
+
 def test_wannier_soc_spin_order_labels():
     """SOC do Wannier90: --soc-spin-order dá os rótulos up:/dn: (blocos ou alternados)."""
     from wtb2kwant.model import from_wannier

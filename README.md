@@ -171,6 +171,12 @@ scattering matrix and W^s the spin weight of each lead mode. This is the same qu
 spin channel counts use.
 
 - **SP:** spin is conserved, so the result is exact: T↑ = `uu`, T↓ = `dd`, no spin flip.
+  `--spin-projection conservation` checks it independently, with Kwant's own route: the
+  leads get the S_z conservation law, which splits their modes by spin, and each component
+  is `smatrix(...).transmission((1, s'), (0, s))` (in Python:
+  `make_two_terminal(..., spin_conservation=True)` and `spin_conductance(syst, E,
+  projection="conservation")`). It agrees with `modes` to 1e-11 (synthetic ferromagnet and
+  graphene SP).
 - **SOC:** the components are never negative and always add up to T. The lead modes
   themselves can mix the two spins, so near band crossings with strong SOC mixing the
   spin flip measures that mixing.
@@ -304,14 +310,13 @@ API of the generated script, and the validation.
 **Transport separated by spin channel**
 
 Already validated: an exact synthetic ferromagnet (T↑↑, T↓↓ = shifted NP transmission and
-spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2) and MoS₂ SOC ribbons (non-negative
-components, sum rule, spin collected in each channel = spin channel counts). Still
+spin channel counts), graphene SP (T↑↑ = T↓↓ = T/2), the SP channels against Kwant's own
+conservation-law route, and MoS₂ SOC ribbons (non-negative components, sum rule, spin
+collected in each channel = spin channel counts). Still
 pending:
 
 - **Real magnetic SP system:** a ferromagnetic or half-metallic 2D crystal with reference
   data; so far only the synthetic exchange model is tested.
-- **Independent check of the SP channels:** compare T↑ and T↓ with Kwant's own
-  `conservation_law` route (`smatrix(...).transmission((1, s), (0, s))`).
 - **SOC components against another NEGF code:** compare T↑↑, T↓↓ and the spin-flip terms
   T↑↓, T↓↑ with an independent spin-resolved calculation (e.g. TBtrans) on the same
   Hamiltonian.

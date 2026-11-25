@@ -595,7 +595,7 @@ python kwant_model.py [--width-zz W] [--width-ac W] [--emin E] [--emax E]
 python kwant_model.py --iv [--vrange VMIN VMAX] [--nv NV] [--de DE] [--temperature K]
                       [--hop-cutoff X] [--length L] [--nproc P] [-o FIGURE]
 # SP/SOC only
-                      [--no-spin] [--spin-projection {modes,sym,block}]
+                      [--no-spin] [--spin-projection {modes,sym,block,conservation}]
 \end{lstlisting}
 Widths and lengths are in \AA{} (default 20 and 30). The energy window defaults to
 $[-3, 3]$\,eV around $E_F$, sampled with \code{--ne} 61 energies for $T(E)$. The output
@@ -659,7 +659,14 @@ unstable: negative with \code{sym}, adding up to more than $2T$ with \code{block
 
 When the lead modes have a pure spin (SP, or SOC with only $S_z$ terms) all three
 definitions coincide and are exact; in the SP case the spin-flip terms vanish,
-$T_\uparrow = $ \code{uu} and $T_\downarrow = $ \code{dd}. With general SOC the lead modes
+$T_\uparrow = $ \code{uu} and $T_\downarrow = $ \code{dd}. For SP models a fourth route,
+\code{projection="conservation"} (\code{--spin-projection conservation}), checks this
+independently of the projections above, with Kwant's own machinery:
+\code{make\_two\_terminal(..., spin\_conservation=True)} gives the leads the conservation law
+$S_z=\mathrm{diag}(\pm1)$ (from the \code{up:}/\code{dn:} labels), Kwant splits the lead modes
+into a spin-down and a spin-up block, and each component is
+\code{smatrix(...).transmission((1, s'), (0, s))}. It applies only when the spin is conserved
+(SP); with SOC the conservation law does not commute with the lead Hamiltonian. With general SOC the lead modes
 themselves can mix the spins, and the spin-flip terms of \code{modes} measure that mixing.
 The Landauer currents of the components use a spin degeneracy of 1,
 $I_{\sigma'\sigma} = (e/h)\int T_{\sigma'\sigma}(f_L-f_R)\,dE$, so the four components add up
@@ -927,7 +934,7 @@ edges.}
 \end{figure}
 
 \subsection{Spin-polarized and spin-orbit models}\label{sec:val-spin}
-\code{tests/validate\_spin.py} (about 20\,min on 12 cores) writes
+\code{tests/validate\_spin.py} (about 28\,min on 12 cores) writes
 \code{tests/results/spin/REPORT.md}. The MoS$_2$ data ship with the repository; the FHI-aims
 and CRYSTAL data are large and are read from \code{\$WTB2KWANT\_INTERFACES\_TEST} (the
 sections are skipped if they are missing).
@@ -979,12 +986,19 @@ compared with the band structure (\code{spin\_channel\_count}).
         (Figure~\ref{fig:sp-magnetic}).
   \item \textbf{Graphene SP:} $T_{\uparrow\uparrow}=T_{\downarrow\downarrow}=T/2$ equals half
         the channel count to $6\times10^{-12}$.
-  \item \textbf{MoS$_2$ SOC} (12\,\AA{} ribbons): $T$ equals the channel count to $10^{-11}$,
-        and with \code{sym} the four components add up to $T$ to $10^{-13}$. Near $E_F$ and in
-        the conduction band the spin is almost conserved (median spin flip $\sim 3\times
-        10^{-3}\,T$). At a few valence-band energies, band crossings where the SOC mixes even
-        and odd orbitals, the spin flip reaches about $0.1\,T$. There, \code{block} components
-        add up to as much as $2.2\,T$, which is why \code{sym} is the default. The
+  \item \textbf{Independent check of the SP channels} with Kwant's own route
+        (\code{projection="conservation"}: $S_z$ conservation law in the leads,
+        \code{smatrix(...).transmission((1, s'), (0, s))}): it agrees with \code{modes} to
+        $6\times10^{-12}$ (synthetic ferromagnet) and $1.3\times10^{-11}$ (graphene SP), and with
+        the exact $T_\text{NP}(E\pm\Delta)$ to $7\times10^{-12}$.
+  \item \textbf{MoS$_2$ SOC} (12\,\AA{} ribbons): $T$ equals the channel count to $10^{-11}$.
+        With \code{modes} (the default) the four components are non-negative and add up to $T$
+        to $10^{-14}$. Near $E_F$ and in the conduction band the spin is almost conserved
+        (median spin flip $1.5\times10^{-3}\,T$ zigzag, $6\times10^{-3}\,T$ armchair); at a few
+        valence-band energies, band crossings where the SOC mixes even and odd orbitals, it
+        reaches $0.22\,T$ (zigzag). There the interface projections become unstable: \code{sym}
+        components go down to $-0.39$ and \code{block} ones add up to $T+4.7$, which is why
+        \code{modes} is the default. The
         spin-weighted channel counts $N_\sigma$ match the transmission collected in each spin
         to $10^{-4}$ (armchair) and $6\times10^{-3}$ (zigzag) in the median; at the mixing
         energies they differ by up to 0.36, because $N_\sigma$ is the spin of the lead modes
@@ -1057,14 +1071,11 @@ run takes about 13\,min on 12 cores.
                 \code{validate\_spin.py} reads them from outside the repository).
         \end{itemize}
   \item \textbf{Pending tests: transport separated by spin channel.} Already validated: an
-        exact synthetic ferromagnet, graphene SP and MoS$_2$ SOC ribbons
-        (Section~\ref{sec:val-spin}). Still pending:
+        exact synthetic ferromagnet, graphene SP, the SP channels against Kwant's own
+        conservation-law route and MoS$_2$ SOC ribbons (Section~\ref{sec:val-spin}). Still pending:
         \begin{itemize}[nosep]
           \item a real magnetic SP system (ferromagnetic or half-metallic 2D crystal) with
                 reference data;
-          \item an independent check of the SP channels with Kwant's own
-                \code{conservation\_law} route,
-                \code{smatrix(...).transmission((1, s), (0, s))};
           \item the SOC components $T_{\uparrow\uparrow}$, $T_{\downarrow\downarrow}$,
                 $T_{\uparrow\downarrow}$, $T_{\downarrow\uparrow}$ against an independent
                 spin-resolved NEGF code (e.g.\ TBtrans) on the same Hamiltonian;

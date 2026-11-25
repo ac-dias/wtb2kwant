@@ -1,6 +1,6 @@
 # Validação wtb2kwant: sistemas com spin (SP e SOC)
 
-Gerado em 2026-11-24 18:52 por `tests/validate_spin.py`.
+Gerado em 2026-11-25 15:46 por `tests/validate_spin.py`.
 
 Convenção do transporte resolvido em spin: T_σ'σ, com σ = spin injetado no lead 0 e
 σ' = spin coletado no lead 1 (`uu`, `ud` = entra ↓ e sai ↑, `du`, `dd`). Padrão (`modes`):
@@ -24,7 +24,7 @@ Modelo: 56 spin-orbitais, 2 sites com 28 orbitais (base tier do FHI-aims, 28 por
 
 ![grafeno SP](graphene_sp_bands_vs_aims.png)
 
-Tempo: 2 s.
+Tempo: 3 s.
 
 ## 2. h-BN SP (CRYSTAL)
 
@@ -60,7 +60,8 @@ Fita zigzag W = 10 Å (cutoff 1e-3 eV em H, 1e-4 em S), Δ = 0.3 eV, 81 energias
 - máx. |T↑↑(E) − T_NP(E+Δ)| = 2.5e-12; máx. |T↓↓(E) − T_NP(E−Δ)| = 4.3e-12
 - spin-flip: máx. |T↑↓|, |T↓↑| = 1.0e-14; máx. |T − ΣT_σ'σ| = 1.8e-15
 - Fita perfeita, canais por spin das bandas (`spin_channel_count`): máx. |T↑↑ − N↑| = 2.6e-12, máx. |T↓↓ − N↓| = 7.3e-13.
-- Tempo: 45 s.
+- Rota do próprio Kwant (`conservation`: lei de conservação S_z nos leads, `smatrix.transmission((1, s'), (0, s))`): máx. |T↑↑ − T↑↑(modes)| = 5.6e-12, máx. |T↓↓ − T↓↓(modes)| = 2.0e-12; contra o exato: 7.1e-12 e 4.1e-12; spin-flip 0.0e+00.
+- Tempo: 53 s.
 
 ![SP magnético](sp_magnetic_spin_transmission.png)
 
@@ -75,7 +76,7 @@ Fita zigzag W = 8 Å (cutoff 1e-3 eV em H, 1e-4 em S).
 | +0.3 | 2 | 2.000000 | 1.000000 | 1.000000 | 1.7e-16 |
 | +1.0 | 10 | 10.000000 | 5.000000 | 5.000000 | -8.4e-15 |
 
-T↑↑ = T↓↓ = T/2 = canais/2 (máx. desvio 6.0e-12). Tempo: 72 s.
+T↑↑ = T↓↓ = T/2 = canais/2 (máx. desvio 6.0e-12). Rota do próprio Kwant (`conservation`): máx. diferença para `modes` 1.3e-11. Tempo: 82 s.
 
 ### 4c. MoS2 SOC: componentes de spin e spin-flip
 
@@ -108,13 +109,13 @@ Energias com maior spin-flip em `modes`, comparadas com `sym`:
 - `modes` mede o spin nos modos propagantes dos leads, a mesma grandeza dos canais por spin (N_σ): as componentes são ≥ 0, somam exatamente T, e o T coletado em cada spin acompanha N_σ.
 - Perto de E_F e na banda de condução o spin é quase conservado, como esperado para o MoS2, em que o SOC dominante (tipo Ising) conserva S_z. O spin-flip só cresce em cruzamentos de bandas da valência em que o SOC mistura orbitais pares e ímpares.
 - `sym` e `block` projetam o spin nos orbitais da interface, onde Γ inclui o acoplamento lead-região, que mistura os spins. Nesses cruzamentos as componentes ficam instáveis: negativas com `sym` e com soma muito maior que T com `block` (colunas acima). Ficam só como comparação.
-- Tempo: 826 s.
+- Tempo: 937 s.
 
 ![MoS2 SOC spin](mos2_soc_spin_transmission.png)
 
 ### 4d. Curvas I-V resolvidas em spin (MoS2 SOC, `run_iv`)
 
-T(E) com passo de 0,02 eV, 300 K; tempo 551 s.
+T(E) com passo de 0,02 eV, 300 K; tempo 613 s.
 
 | fita | V (V) | I total (µA) | I↑↑ | I↓↓ | I↑↓ | I↓↑ | I total − ΣI_σ'σ |
 |---|---|---|---|---|---|---|---|
@@ -129,4 +130,4 @@ T(E) com passo de 0,02 eV, 300 K; tempo 551 s.
 
 ![iv spin](iv_soc_spin.png)
 
-Tempo total: 1499 s.
+Tempo total: 1690 s.
